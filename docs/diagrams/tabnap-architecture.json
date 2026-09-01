@@ -1,0 +1,240 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "TabNap MV3 本機優先架構",
+    "output": "docs/diagrams/tabnap-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/davislinyd/TabNap",
+      "revision": "0a723aae71adbc998da28ecb56c1abca809080cd"
+    },
+    "viewBox": [1320, 720],
+    "views": [
+      {
+        "id": "entrypoints",
+        "label": "入口與互動面",
+        "focus": ["user-browser", "popup", "worker", "chrome-api"],
+        "note": "從工具列 Popup 與 Cmd/Ctrl+E 進入 service worker，再呼叫 Chromium API。"
+      },
+      {
+        "id": "release-path",
+        "label": "釋放路徑",
+        "focus": ["popup", "worker", "release-core", "page-inject", "chrome-api"],
+        "note": "RELEASE_TAB 先做 best-effort 標記，再依能力走 processes.terminate 或 tabs.discard。"
+      },
+      {
+        "id": "local-state",
+        "label": "本機狀態",
+        "focus": ["auto-rules", "local-storage", "session-state", "worker"],
+        "note": "規則與開關在 chrome.storage.local；已釋放／Never Close 分頁標記走 session 或 ephemeral。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "user-browser",
+      "type": "external",
+      "label": "使用者與分頁列",
+      "sublabel": "toolbar · Cmd/Ctrl+E",
+      "pos": [40, 310],
+      "size": [170, 70]
+    },
+    {
+      "id": "popup",
+      "type": "frontend",
+      "label": "Popup",
+      "sublabel": "popup.html · popup.js",
+      "pos": [250, 90],
+      "size": [180, 70],
+      "sources": [
+        { "path": "manifest.json", "label": "action" },
+        { "path": "popup.html" },
+        { "path": "popup.js" }
+      ]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "MV3 service worker",
+      "sublabel": "background.js",
+      "tag": "messages + alarms",
+      "pos": [470, 90],
+      "size": [200, 76],
+      "sources": [
+        { "path": "background.js" },
+        { "path": "manifest.json", "label": "service_worker" }
+      ]
+    },
+    {
+      "id": "auto-rules",
+      "type": "backend",
+      "label": "AutoEndRules",
+      "sublabel": "站點／分頁政策",
+      "pos": [250, 310],
+      "size": [180, 82],
+      "sources": [
+        { "path": "auto-end-rules.js" }
+      ]
+    },
+    {
+      "id": "release-core",
+      "type": "backend",
+      "label": "EndTaskCore",
+      "sublabel": "terminate／discard",
+      "tag": "capability fallback",
+      "pos": [470, 310],
+      "size": [200, 82],
+      "sources": [
+        { "path": "end-task-core.js" }
+      ]
+    },
+    {
+      "id": "page-inject",
+      "type": "frontend",
+      "label": "分頁標記注入",
+      "sublabel": "title prefix / sleep icon",
+      "pos": [470, 530],
+      "size": [200, 76],
+      "sources": [
+        { "path": "prefix-tab-title.js" }
+      ]
+    },
+    {
+      "id": "chrome-api",
+      "type": "external",
+      "label": "Chrome APIs",
+      "sublabel": "tabs · processes · alarms",
+      "tag": "MV3 permissions",
+      "pos": [920, 90],
+      "size": [200, 76],
+      "sources": [
+        { "path": "manifest.json", "label": "permissions" }
+      ]
+    },
+    {
+      "id": "local-storage",
+      "type": "database",
+      "label": "chrome.storage.local",
+      "sublabel": "規則與自動釋放開關",
+      "pos": [250, 530],
+      "size": [180, 82],
+      "sources": [
+        { "path": "auto-end-rules.js" },
+        { "path": "popup.js", "label": "settings" }
+      ]
+    },
+    {
+      "id": "session-state",
+      "type": "database",
+      "label": "session／ephemeral",
+      "sublabel": "terminatedTabs",
+      "pos": [920, 530],
+      "size": [200, 76],
+      "sources": [
+        { "path": "auto-end-rules.js", "label": "ephemeral" },
+        { "path": "background.js" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Chromium Manifest V3 extension",
+      "wraps": ["popup", "worker", "auto-rules", "release-core", "page-inject"],
+      "pad": 24
+    }
+  ],
+  "connections": [
+    {
+      "id": "user-popup",
+      "from": "user-browser",
+      "to": "popup",
+      "label": "工具列",
+      "variant": "emphasis"
+    },
+    {
+      "id": "popup-worker",
+      "from": "popup",
+      "to": "worker",
+      "label": "RELEASE_TAB",
+      "labelDy": -25,
+      "variant": "emphasis"
+    },
+    {
+      "id": "worker-core",
+      "from": "worker",
+      "to": "release-core",
+      "label": "releaseTab",
+      "labelDy": 24,
+      "variant": "emphasis"
+    },
+    {
+      "id": "core-chrome",
+      "from": "release-core",
+      "to": "chrome-api",
+      "label": "terminate／discard",
+      "variant": "emphasis"
+    },
+    {
+      "id": "core-inject",
+      "from": "release-core",
+      "to": "page-inject",
+      "label": "scripting",
+      "labelDy": 24,
+      "variant": "dashed"
+    },
+    {
+      "id": "worker-rules",
+      "from": "worker",
+      "to": "auto-rules",
+      "label": "idle policy"
+    },
+    {
+      "id": "rules-local",
+      "from": "auto-rules",
+      "to": "local-storage",
+      "label": "autoEndRules",
+      "labelDy": 24
+    },
+    {
+      "id": "core-session",
+      "from": "release-core",
+      "to": "session-state",
+      "label": "terminatedTabs"
+    },
+    {
+      "id": "worker-chrome",
+      "from": "worker",
+      "to": "chrome-api",
+      "label": "alarms／commands",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "MV3 入口",
+      "items": [
+        "Popup 與 Cmd/Ctrl+E 都進 background.js",
+        "釋放實際由 EndTaskCore 執行"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "能力降級",
+      "items": [
+        "有 chrome.processes 時走 End Task",
+        "穩定版自動改用 tabs.discard()"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "本機優先",
+      "items": [
+        "規則與狀態只寫入瀏覽器 storage",
+        "不把分頁 URL 或標題送到外部伺服器"
+      ]
+    }
+  ]
+}

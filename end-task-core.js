@@ -1,6 +1,7 @@
 /**
- * Shared End Task helpers for popup and service worker.
- * Depends on: AutoEndRules, prefixTabTitleWithMarker (optional for prefix).
+ * Shared tab release helpers for popup and service worker.
+ * Depends on: AutoEndRules, prefixTabTitleWithMarker and setTabSleepingIcon.
+ * Backend: terminate via chrome.processes when present, otherwise tabs.discard.
  */
 (function () {
   const DEFAULT_CONCURRENCY = 4;
@@ -10,6 +11,7 @@
   const PREFIX_SINGLE_MS = 1000;
   const PREFIX_BATCH_PER_TAB_MS = 350;
   const PREFIX_BATCH_GROUP_MS = 700;
+  const SLEEPING_ICON_TIMEOUT_MS = 1000;
   const PROBE_STATE_ALIVE = 'alive';
   const PROBE_STATE_DEAD = 'dead';
   const PROBE_STATE_UNKNOWN = 'unknown';
@@ -20,6 +22,40 @@
       url?.startsWith('brave://') ||
       url?.startsWith('edge://')
     );
+  }
+
+  function hasProcessesApi() {
+    return typeof chrome !== 'undefined' && !!chrome.processes;
+  }
+
+  function getReleaseBackend() {
+    return hasProcessesApi() ? 'terminate' : 'discard';
+  }
+
+  /**
+   * Pick a same-window tab to receive focus before discarding an active tab.
+   * Prefers the next live tab, then the previous live tab. Returns null when
+   * there is no non-discarded sibling (caller should open a parking tab).
+   */
+  function pickFocusSuccessor(tab, windowTabs) {
+    const tabId = tab?.id;
+    const tabIndex = tab?.index ?? 0;
+    const others = (windowTabs || [])
+      .filter((item) => item?.id != null && item.id !== tabId)
+      .sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+    const live = others.filter((item) => !item.discarded);
+    if (live.length === 0) return null;
+
+    const next = live.find((item) => (item.index ?? 0) > tabIndex);
+    if (next) return next;
+    const prev = [...live].reverse().find((item) => (item.index ?? 0) < tabIndex);
+    return prev || live[0];
+  }
+
+  function wrapDiscardError(err, fallbackMessage) {
+    const wrapped = err instanceof Error ? err : new Error(String(err || fallbackMessage));
+    if (!wrapped.code) wrapped.code = 'DISCARD_FAILED';
+    return wrapped;
   }
 
   function isProcessNotFoundError(err) {
@@ -321,6 +357,44 @@
   }
 
   /**
+   * Best-effort sleeping favicon before the renderer is released.
+   * @param {chrome.tabs.Tab[]} tabs
+   */
+  async function setSleepingIconTabsBestEffort(tabs) {
+    if (typeof setTabSleepingIcon !== 'function') return;
+    const list = (tabs || []).filter((tab) => tab?.id && !isBuiltInPage(tab.url));
+    if (list.length === 0) return;
+
+    const deadline = Date.now() + SLEEPING_ICON_TIMEOUT_MS;
+    const run = (targets) =>
+      Promise.all(
+        targets.map((tab) =>
+          setTabSleepingIcon(tab.id, tab.url, {
+            maybeHasActiveTabAccess: !!tab.active,
+          }).catch(() => false)
+        )
+      );
+
+    const work = run(list);
+    const results = await Promise.race([
+      work,
+      sleep(SLEEPING_ICON_TIMEOUT_MS).then(() => null),
+    ]);
+    if (!results) return;
+
+    // Retry only tabs whose injection failed before the deadline.
+    const failed = list.filter((_tab, index) => !results[index]);
+    if (failed.length === 0) return;
+    const remainingMs = Math.max(0, deadline - Date.now());
+    if (remainingMs === 0) return;
+
+    await Promise.race([
+      run(failed),
+      sleep(remainingMs).then(() => null),
+    ]).catch(() => {});
+  }
+
+  /**
    * Terminate a tab's renderer process and mark all tabs sharing that process.
    * @param {chrome.tabs.Tab} tab
    * @param {{
@@ -352,12 +426,16 @@
       throw err;
     }
 
-    if (prefixTitle) {
-      await prefixTabsBestEffort(
-        [{ ...tab, active: maybeHasActiveTabAccess || !!tab.active }],
-        { perTabMs: PREFIX_SINGLE_MS, totalMs: PREFIX_SINGLE_MS }
-      );
-    }
+    const targetTab = { ...tab, active: maybeHasActiveTabAccess || !!tab.active };
+    await Promise.all([
+      setSleepingIconTabsBestEffort([targetTab]),
+      prefixTitle
+        ? prefixTabsBestEffort([targetTab], {
+            perTabMs: PREFIX_SINGLE_MS,
+            totalMs: PREFIX_SINGLE_MS,
+          })
+        : Promise.resolve(),
+    ]);
 
     const tabsSnapshot = allTabs || (await chrome.tabs.query({}));
     let processId = null;
@@ -708,13 +786,16 @@
     for (const [processId, groupTabs] of processGroups) {
       const primary = groupTabs[0];
       try {
-        // Prefix BEFORE kill — once the process is gone, scripting cannot set the title.
-        if (prefixTitle) {
-          await prefixTabsBestEffort(groupTabs, {
-            perTabMs: PREFIX_BATCH_PER_TAB_MS,
-            totalMs: PREFIX_BATCH_GROUP_MS,
-          });
-        }
+        // Update favicon/title BEFORE kill — once the process is gone, scripting cannot.
+        await Promise.all([
+          setSleepingIconTabsBestEffort(groupTabs),
+          prefixTitle
+            ? prefixTabsBestEffort(groupTabs, {
+                perTabMs: PREFIX_BATCH_PER_TAB_MS,
+                totalMs: PREFIX_BATCH_GROUP_MS,
+              })
+            : Promise.resolve(),
+        ]);
 
         await ensureTerminated(processId, primary.id);
 
@@ -812,6 +893,269 @@
     };
   }
 
+  async function markDiscardedTab(tab, terminatedStorage) {
+    const storedEntries = buildStoredEntries([tab]);
+    if (tab?.id != null) {
+      storedEntries[String(tab.id)] = storedInfoFromTab(tab);
+      await terminatedStorage.setEntries(storedEntries);
+    }
+    return storedEntries;
+  }
+
+  async function ensureTabNotActive(tab) {
+    let current = tab;
+    try {
+      current = await chrome.tabs.get(tab.id);
+    } catch {
+      current = tab;
+    }
+    if (!current?.active) {
+      return { tab: current, parkingTabId: null, focusedTabId: null };
+    }
+
+    const windowTabs = await chrome.tabs.query({ windowId: current.windowId });
+    const successor = pickFocusSuccessor(current, windowTabs);
+    if (successor?.id) {
+      await chrome.tabs.update(successor.id, { active: true });
+      return { tab: current, parkingTabId: null, focusedTabId: successor.id };
+    }
+
+    const parking = await chrome.tabs.create({
+      windowId: current.windowId,
+      active: true,
+    });
+    return {
+      tab: current,
+      parkingTabId: parking?.id ?? null,
+      focusedTabId: parking?.id ?? null,
+    };
+  }
+
+  /**
+   * Unload a tab via chrome.tabs.discard. Switches focus first when needed.
+   */
+  async function discardTab(tab, options = {}) {
+    const {
+      terminatedStorage = AutoEndRules.getTerminatedTabsStorage(),
+      skipSleepingIcon = false,
+    } = options;
+
+    if (!tab?.id) {
+      throw new Error('Invalid tab');
+    }
+    if (isBuiltInPage(tab.url)) {
+      const err = new Error('Cannot discard built-in pages');
+      err.code = 'BUILT_IN_PAGE';
+      throw err;
+    }
+
+    let current = tab;
+    try {
+      current = await chrome.tabs.get(tab.id);
+    } catch (err) {
+      throw wrapDiscardError(err, 'Tab not found');
+    }
+
+    if (current.discarded) {
+      const storedEntries = await markDiscardedTab(current, terminatedStorage);
+      return {
+        ok: true,
+        backend: 'discard',
+        alreadyDiscarded: true,
+        terminatedTabIds: [current.id],
+        affectedTabs: [current],
+        storedEntries,
+      };
+    }
+
+    if (!skipSleepingIcon) {
+      await setSleepingIconTabsBestEffort([current]);
+    }
+    await ensureTabNotActive(current);
+
+    let latest = await chrome.tabs.get(current.id).catch(() => current);
+    if (latest.active) {
+      await sleep(50);
+      latest = await chrome.tabs.get(current.id).catch(() => latest);
+    }
+    if (latest.active) {
+      const err = new Error('Unable to discard the active tab');
+      err.code = 'DISCARD_FAILED';
+      throw err;
+    }
+
+    let discardedTab = null;
+    try {
+      discardedTab = await chrome.tabs.discard(current.id);
+    } catch (err) {
+      throw wrapDiscardError(err, 'Unable to discard tab');
+    }
+
+    const finalTab =
+      discardedTab || (await chrome.tabs.get(current.id).catch(() => latest));
+    if (!finalTab?.discarded) {
+      const err = new Error('Unable to discard tab');
+      err.code = 'DISCARD_FAILED';
+      throw err;
+    }
+
+    const storedSource = {
+      ...current,
+      ...finalTab,
+      url: current.url || finalTab.url,
+      title: current.title || finalTab.title,
+    };
+    const storedEntries = await markDiscardedTab(storedSource, terminatedStorage);
+
+    if (globalThis.DebugLog) {
+      globalThis.DebugLog.info('discardTab ok', { tabId: current.id });
+    }
+
+    return {
+      ok: true,
+      backend: 'discard',
+      terminatedTabIds: [current.id],
+      affectedTabs: [finalTab],
+      storedEntries,
+    };
+  }
+
+  /**
+   * Discard many tabs. Inactive tabs first so a later active-tab focus switch
+   * does not wake a tab we just discarded.
+   */
+  async function discardTabsBatch(tabs, options = {}) {
+    const {
+      concurrency = DEFAULT_CONCURRENCY,
+      terminatedStorage = AutoEndRules.getTerminatedTabsStorage(),
+      onItemDone = null,
+    } = options;
+
+    const candidates = (tabs || []).filter((tab) => tab?.id && !isBuiltInPage(tab.url));
+    if (candidates.length === 0) {
+      return { terminatedTabIds: [], storedEntries: {}, results: [] };
+    }
+
+    const freshList = await runWithConcurrency(candidates, concurrency, async (tab) => {
+      try {
+        return await chrome.tabs.get(tab.id);
+      } catch {
+        return tab;
+      }
+    });
+
+    // Inject all icons once, with one short global timeout, before discarding.
+    await setSleepingIconTabsBestEffort(freshList);
+
+    const inactive = [];
+    const active = [];
+    for (const item of freshList.filter(Boolean)) {
+      if (item.active && !item.discarded) active.push(item);
+      else inactive.push(item);
+    }
+
+    const storedEntries = {};
+    const terminatedTabIds = [];
+    const results = [];
+
+    async function discardOne(item) {
+      try {
+        const result = await discardTab(item, {
+          terminatedStorage,
+          skipSleepingIcon: true,
+        });
+        Object.assign(storedEntries, result.storedEntries);
+        for (const id of result.terminatedTabIds || []) terminatedTabIds.push(id);
+        results.push(result);
+        if (onItemDone) onItemDone(result);
+        return result;
+      } catch (err) {
+        if (globalThis.DebugLog) {
+          globalThis.DebugLog.error('discardTabsBatch item fail', {
+            tabId: item?.id,
+            message: String(err?.message || err),
+            code: err?.code,
+          });
+        }
+        const fail = { tab: item, ok: false, error: err };
+        results.push(fail);
+        if (onItemDone) onItemDone(fail);
+        return fail;
+      }
+    }
+
+    await runWithConcurrency(inactive, concurrency, discardOne);
+    for (const item of active) {
+      await discardOne(item);
+    }
+
+    const finalTerminatedIds = [...new Set(terminatedTabIds.filter((id) => id != null))];
+    const finalEntries = {};
+    for (const id of finalTerminatedIds) {
+      const key = String(id);
+      if (storedEntries[key]) finalEntries[key] = storedEntries[key];
+    }
+
+    if (globalThis.DebugLog) {
+      globalThis.DebugLog.info('discardTabsBatch done', {
+        terminatedCount: finalTerminatedIds.length,
+        ok: results.filter((item) => item?.ok).length,
+        fail: results.filter((item) => item && !item.ok).length,
+      });
+    }
+
+    return {
+      terminatedTabIds: finalTerminatedIds,
+      storedEntries: finalEntries,
+      results,
+    };
+  }
+
+  async function releaseTab(tab, options = {}) {
+    if (getReleaseBackend() === 'discard') {
+      return discardTab(tab, options);
+    }
+    return terminateTabProcess(tab, options);
+  }
+
+  async function releaseTabsBatch(tabs, options = {}) {
+    if (getReleaseBackend() === 'discard') {
+      return discardTabsBatch(tabs, options);
+    }
+    return terminateTabsBatch(tabs, options);
+  }
+
+  /**
+   * Discard-mode only: drop markers for tabs the user already woke in the tab strip.
+   */
+  async function reconcileDiscardedTabs(
+    tabs,
+    alreadyTerminated = {},
+    terminatedStorage
+  ) {
+    const storage = terminatedStorage || AutoEndRules.getTerminatedTabsStorage();
+    const current =
+      alreadyTerminated && typeof alreadyTerminated === 'object'
+        ? { ...alreadyTerminated }
+        : {};
+    const tabById = new Map((tabs || []).map((item) => [String(item.id), item]));
+    const revivedIds = [];
+
+    for (const id of Object.keys(current)) {
+      const item = tabById.get(id);
+      if (!item) continue;
+      if (!item.discarded) {
+        revivedIds.push(Number(id));
+        delete current[id];
+      }
+    }
+
+    if (revivedIds.length > 0) {
+      await storage.removeEntries(revivedIds);
+    }
+    return current;
+  }
+
   globalThis.EndTaskCore = {
     DEFAULT_CONCURRENCY,
     PROBE_STATE_ALIVE,
@@ -819,13 +1163,22 @@
     PROBE_STATE_UNKNOWN,
     buildStoredEntries,
     clearTerminatedIfAlive,
+    discardTab,
+    discardTabsBatch,
+    getReleaseBackend,
+    hasProcessesApi,
     isBuiltInPage,
     isProcessNotFoundError,
     isTabProcessAlive,
+    pickFocusSuccessor,
     prefixTabsBestEffort,
+    setSleepingIconTabsBestEffort,
     probeTabProcess,
+    reconcileDiscardedTabs,
     reconcileDeadTabs,
     reconcileRevivedTabs,
+    releaseTab,
+    releaseTabsBatch,
     retainDeadTabEntries,
     runWithConcurrency,
     storedInfoFromTab,

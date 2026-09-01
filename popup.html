@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>End Task</title>
+  <title>TabNap</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;font-size:14px;color:#333;background:#f5f5f5;min-width:400px;max-width:400px;max-height:600px}
@@ -23,19 +23,20 @@
   <div class="container">
     <header class="header">
       <div class="title-row">
-        <h1 class="title">End Task</h1>
+        <h1 class="title">TabNap</h1>
         <span id="extension-version" class="version" aria-label="版本"></span>
       </div>
-      <p class="subtitle">選擇分頁並終止其 process 以釋放資源</p>
+      <p class="subtitle">選擇分頁並釋放記憶體</p>
+      <p id="fallback-notice" class="fallback-notice hidden">此瀏覽器不支援終止 process，已改用 Discard 休眠分頁。</p>
       <div class="auto-end-settings">
         <div class="auto-end-top-row">
           <label class="auto-end-toggle">
             <input type="checkbox" id="auto-end-enabled" />
-            <span>啟用自動 End Task</span>
+            <span>啟用自動釋放</span>
           </label>
           <div id="batch-actions" class="batch-actions hidden">
-            <button id="end-task-all" class="end-task-all-btn">End Task All</button>
-            <button id="restore-all" class="restore-all-btn">Restore All</button>
+            <button id="end-task-all" class="end-task-all-btn">全部釋放</button>
+            <button id="restore-all" class="restore-all-btn">全部喚醒</button>
           </div>
         </div>
         <div class="auto-end-input-row">
@@ -46,11 +47,11 @@
       </div>
       <div class="rules-section">
         <div class="rules-header">
-          <span class="rules-title">自動 End Task 規則</span>
+          <span class="rules-title">自動釋放規則</span>
           <button type="button" id="rules-toggle" class="rules-toggle" aria-expanded="false">展開</button>
         </div>
         <div id="rules-content" class="rules-content hidden">
-          <p class="rules-hint">Never Close（分頁或站點規則）會略過自動 End Task 與 End Task All；單一分頁 End Task 仍可強制終止。其餘分頁可選自訂閒置分鐘。</p>
+          <p class="rules-hint">Never Close（分頁或站點規則）會略過自動釋放與全部釋放；單一分頁仍可強制釋放。其餘分頁可選自訂閒置分鐘。</p>
           <div class="rule-form-row">
             <select id="rule-match-type" class="rule-select">
               <option value="domain">Domain</option>
@@ -75,7 +76,7 @@
       </div>
     </header>
 
-    <div id="error-message" class="error-message hidden">chrome.processes API 不支援。請使用 Chrome Dev channel。</div>
+    <div id="error-message" class="error-message hidden">載入分頁失敗。</div>
 
     <div id="empty-state" class="empty-state hidden">
       目前沒有可操作的分頁。

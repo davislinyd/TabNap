@@ -1,2 +1,23 @@
 .ai/
 .DS_Store
+dist/
+
+# Local agent / editor
+.cursor/
+PROJECT_STATUS.md
+
+# Secrets and local env
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# Generated packages
+*.zip
+
+# Diagram visual-check artifacts (keep source HTML/JSON)
+docs/diagrams/*.visual-check.*
+
+# Store capture originals
+store/screenshots/*.original.png

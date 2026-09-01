@@ -11,6 +11,7 @@ function canAutoTerminateTab(tab) {
   return (
     tab.id &&
     !tab.active &&
+    !tab.discarded &&
     tab.lastAccessed != null &&
     !EndTaskCore.isBuiltInPage(tab.url)
   );
@@ -68,8 +69,6 @@ async function syncAlarmWithSettings() {
 }
 
 async function runAutoEndTask() {
-  if (!chrome.processes) return;
-
   const { autoEndTask } = await chrome.storage.local.get('autoEndTask');
   const { enabled = false, idleMinutes = AutoEndRules.DEFAULT_IDLE_MINUTES } =
     autoEndTask || {};
@@ -105,7 +104,7 @@ async function runAutoEndTask() {
   if (toTerminate.length === 0) return;
 
   try {
-    await EndTaskCore.terminateTabsBatch(toTerminate, {
+    await EndTaskCore.releaseTabsBatch(toTerminate, {
       prefixTitle: false,
       concurrency: EndTaskCore.DEFAULT_CONCURRENCY,
       allTabs: tabs,
@@ -175,29 +174,86 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
+function serializeReleaseError(err) {
+  return {
+    message: String(err?.message || err || 'Release failed'),
+    code: err?.code || null,
+  };
+}
+
+async function releaseTabById(tabId, options = {}) {
+  const tab = await chrome.tabs.get(tabId);
+  return EndTaskCore.releaseTab(tab, {
+    prefixTitle: EndTaskCore.getReleaseBackend() === 'terminate',
+    maybeHasActiveTabAccess: !!tab.active,
+    terminatedStorage,
+    ...options,
+  });
+}
+
+async function releaseTabsByIds(tabIds, options = {}) {
+  const tabs = [];
+  for (const tabId of tabIds || []) {
+    try {
+      tabs.push(await chrome.tabs.get(tabId));
+    } catch {
+      // Tab closed before release.
+    }
+  }
+  return EndTaskCore.releaseTabsBatch(tabs, {
+    prefixTitle: EndTaskCore.getReleaseBackend() === 'terminate',
+    concurrency: EndTaskCore.DEFAULT_CONCURRENCY,
+    terminatedStorage,
+    ...options,
+  });
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  const type = message?.type;
+  if (type !== 'RELEASE_TAB' && type !== 'RELEASE_TABS') return;
+
+  const run =
+    type === 'RELEASE_TAB'
+      ? releaseTabById(message.tabId)
+      : releaseTabsByIds(message.tabIds);
+
+  run
+    .then((result) => {
+      try {
+        sendResponse({ ok: true, result });
+      } catch {
+        // Popup may have closed after a focus switch.
+      }
+    })
+    .catch((err) => {
+      console.error('Release message failed:', err);
+      try {
+        sendResponse({ ok: false, error: serializeReleaseError(err) });
+      } catch {
+        // Popup may have closed.
+      }
+    });
+  return true;
+});
+
 chrome.commands.onCommand.addListener(async (command) => {
   if (command !== 'end-current-tab') return;
-
-  if (!chrome.processes) {
-    console.error('chrome.processes API is not available');
-    return;
-  }
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab) return;
 
     if (EndTaskCore.isBuiltInPage(tab.url)) {
-      console.warn('Cannot terminate built-in pages');
+      console.warn('Cannot release built-in pages');
       return;
     }
 
-    await EndTaskCore.terminateTabProcess(tab, {
-      prefixTitle: true,
+    await EndTaskCore.releaseTab(tab, {
+      prefixTitle: EndTaskCore.getReleaseBackend() === 'terminate',
       maybeHasActiveTabAccess: true,
       terminatedStorage,
     });
   } catch (err) {
-    console.error('Failed to terminate process:', err);
+    console.error('Failed to release tab:', err);
   }
 });

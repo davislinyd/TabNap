@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "TabNap 釋放與喚醒流程",
+    "output": "docs/diagrams/tabnap-workflow.html",
+    "quality_profile": "showcase",
+    "viewBox": [1080, 720],
+    "views": [
+      {
+        "id": "manual-release",
+        "label": "手動釋放",
+        "focus": ["act", "message", "mark", "backend", "apply", "persist"],
+        "note": "Popup 或快捷鍵送 RELEASE_TAB，先標記再 terminate／discard，最後寫入 terminatedTabs。"
+      },
+      {
+        "id": "wake-and-auto",
+        "label": "喚醒與自動釋放",
+        "focus": ["alarm", "message", "persist", "wake"],
+        "note": "自動釋放走同一條 release 路徑但不注入標題前綴；喚醒則 reload 並清掉標記。"
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "user-lane", "label": "使用者與 Popup" },
+    { "id": "runtime-lane", "label": "Service Worker" },
+    { "id": "core-lane", "label": "EndTaskCore" },
+    { "id": "browser-lane", "label": "Chromium APIs" },
+    { "id": "data-lane", "label": "本機狀態" }
+  ],
+  "phases": [
+    { "id": "entry-phase", "label": "入口", "fromCol": 0, "toCol": 1 },
+    { "id": "prepare-phase", "label": "標記與後端選擇", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "effect-phase", "label": "釋放與同步", "fromCol": 4, "toCol": 5 }
+  ],
+  "groups": [
+    {
+      "id": "release-loop",
+      "label": "Release path",
+      "lane": "core-lane",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    }
+  ],
+  "mainPath": ["act", "message", "mark", "backend", "apply", "persist", "wake"],
+  "nodes": [
+    {
+      "id": "act",
+      "lane": "user-lane",
+      "col": 0,
+      "type": "external",
+      "label": "釋放分頁",
+      "sublabel": "Popup／Cmd+E"
+    },
+    {
+      "id": "alarm",
+      "lane": "runtime-lane",
+      "col": 0,
+      "type": "messagebus",
+      "label": "自動釋放",
+      "sublabel": "alarms 每分鐘"
+    },
+    {
+      "id": "message",
+      "lane": "runtime-lane",
+      "col": 1,
+      "type": "backend",
+      "label": "訊息路由",
+      "sublabel": "RELEASE_TAB"
+    },
+    {
+      "id": "mark",
+      "lane": "core-lane",
+      "col": 2,
+      "type": "frontend",
+      "label": "睡眠標記",
+      "sublabel": "favicon／title"
+    },
+    {
+      "id": "backend",
+      "lane": "core-lane",
+      "col": 3,
+      "type": "backend",
+      "label": "選擇後端",
+      "sublabel": "terminate／discard",
+      "tag": "capability"
+    },
+    {
+      "id": "apply",
+      "lane": "browser-lane",
+      "col": 4,
+      "type": "external",
+      "label": "執行釋放",
+      "sublabel": "processes／tabs"
+    },
+    {
+      "id": "persist",
+      "lane": "data-lane",
+      "col": 4,
+      "type": "database",
+      "label": "寫入標記",
+      "sublabel": "terminatedTabs"
+    },
+    {
+      "id": "wake",
+      "lane": "user-lane",
+      "col": 5,
+      "type": "frontend",
+      "label": "喚醒",
+      "sublabel": "tabs.reload"
+    }
+  ],
+  "edges": [
+    {
+      "id": "act-message",
+      "from": "act",
+      "to": "message",
+      "role": "main",
+      "variant": "emphasis"
+    },
+    {
+      "id": "alarm-message",
+      "from": "alarm",
+      "to": "message",
+      "label": "idle policy",
+      "labelDy": -20,
+      "role": "branch",
+      "variant": "dashed"
+    },
+    {
+      "id": "message-mark",
+      "from": "message",
+      "to": "mark",
+      "role": "main",
+      "variant": "emphasis"
+    },
+    {
+      "id": "mark-backend",
+      "from": "mark",
+      "to": "backend",
+      "role": "main",
+      "variant": "emphasis"
+    },
+    {
+      "id": "backend-apply",
+      "from": "backend",
+      "to": "apply",
+      "label": "End Task／Discard",
+      "role": "main",
+      "variant": "emphasis"
+    },
+    {
+      "id": "apply-persist",
+      "from": "apply",
+      "to": "persist",
+      "role": "main",
+      "variant": "emphasis"
+    },
+    {
+      "id": "persist-wake",
+      "from": "persist",
+      "to": "wake",
+      "label": "reload",
+      "role": "branch"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "同一條釋放路徑",
+      "items": [
+        "Popup、快捷鍵與自動釋放都進 EndTaskCore",
+        "自動釋放不注入 ♻️ 標題前綴"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "喚醒與標記",
+      "items": [
+        "Dev End Task 標記會黏住直到喚醒或關閉分頁",
+        "穩定版 Discard 在使用者點回分頁後改回釋放"
+      ]
+    }
+  ]
+}

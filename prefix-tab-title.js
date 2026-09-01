@@ -140,3 +140,68 @@ async function prefixTabTitleWithMarker(tabId, url, options = {}) {
     console.warn('prefixTabTitleWithMarker failed:', err);
   }
 }
+
+/**
+ * Set the browser tab favicon before its renderer is terminated or discarded.
+ * The marker persists in the tab strip while Chromium keeps the tab discarded.
+ */
+async function setTabSleepingIcon(tabId, url, options = {}) {
+  if (!chrome.scripting || !chrome.runtime?.getURL) return false;
+  const { maybeHasActiveTabAccess = false } = options;
+
+  let resolvedUrl = url;
+  if (resolvedUrl === undefined) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      resolvedUrl = tab.url;
+    } catch {
+      return false;
+    }
+  }
+
+  const originPattern = resolvedUrl ? getScriptableOriginPattern(resolvedUrl) : null;
+  if (!originPattern) return false;
+
+  // http(s) access is declared in manifest.json; avoid a permissions API round
+  // trip for every tab in a large batch. File URLs still need the special check.
+  if (
+    isFileUrl(resolvedUrl) &&
+    !(await canScriptTab(originPattern, resolvedUrl, maybeHasActiveTabAccess))
+  ) {
+    return false;
+  }
+
+  try {
+    const iconUrl = chrome.runtime.getURL('icons/icon16.png');
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (sleepingIconUrl) => {
+        const iconLinks = [...document.querySelectorAll('link[rel~="icon"]')];
+        const marker = document.querySelector('link[data-tabnap-sleeping-icon]');
+        const iconLink = marker || document.createElement('link');
+        iconLink.rel = 'icon';
+        iconLink.type = 'image/png';
+        iconLink.sizes = '16x16';
+        iconLink.href = sleepingIconUrl;
+        iconLink.dataset.tabnapSleepingIcon = 'true';
+
+        if (!iconLink.isConnected) {
+          const parent = document.head || document.documentElement;
+          if (parent) parent.appendChild(iconLink);
+        }
+
+        for (const link of iconLinks) {
+          if (link !== iconLink) link.href = sleepingIconUrl;
+        }
+      },
+      args: [iconUrl],
+    });
+    // Give Chromium a brief chance to receive the favicon update before discard.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return true;
+  } catch (err) {
+    if (isExpectedAccessError(err)) return false;
+    console.warn('setTabSleepingIcon failed:', err);
+    return false;
+  }
+}

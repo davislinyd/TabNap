@@ -389,7 +389,7 @@
 
   function getRuleModeLabel(rule) {
     if (rule?.mode === RULE_MODE_NEVER) return 'Never Close';
-    return `${clampIdleMinutes(rule?.idleMinutes)} 分鐘後自動 End Task`;
+    return `${clampIdleMinutes(rule?.idleMinutes)} 分鐘後自動釋放`;
   }
 
   globalThis.AutoEndRules = {

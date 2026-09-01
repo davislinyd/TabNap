@@ -42,8 +42,55 @@ function showTabList() {
   batchActions?.classList.remove('hidden');
 }
 
+const fallbackNotice = document.getElementById('fallback-notice');
+
+function showFallbackNotice(visible) {
+  if (!fallbackNotice) return;
+  fallbackNotice.classList.toggle('hidden', !visible);
+}
+
+function serializeError(errLike) {
+  const err = new Error(errLike?.message || '釋放失敗');
+  err.code = errLike?.code || undefined;
+  return err;
+}
+
+function isPopupClosedError(err) {
+  const message = String(err?.message || err || '').toLowerCase();
+  return (
+    message.includes('message port closed') ||
+    message.includes('asynchronous response') ||
+    message.includes('receiving end does not exist')
+  );
+}
+
+async function requestReleaseTab(tab, options = {}) {
+  if (EndTaskCore.getReleaseBackend() === 'terminate') {
+    return EndTaskCore.terminateTabProcess(tab, options);
+  }
+  const response = await chrome.runtime.sendMessage({
+    type: 'RELEASE_TAB',
+    tabId: tab.id,
+  });
+  if (!response?.ok) throw serializeError(response?.error);
+  return response.result;
+}
+
+async function requestReleaseTabs(tabs, options = {}) {
+  if (EndTaskCore.getReleaseBackend() === 'terminate') {
+    return EndTaskCore.terminateTabsBatch(tabs, options);
+  }
+  const response = await chrome.runtime.sendMessage({
+    type: 'RELEASE_TABS',
+    tabIds: (tabs || []).map((item) => item.id).filter((id) => id != null),
+  });
+  if (!response?.ok) throw serializeError(response?.error);
+  return response.result;
+}
+
 const FAVICON_PLACEHOLDER =
   'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect fill="%23ccc" width="16" height="16"/></svg>';
+const SLEEPING_TAB_ICON = '💤';
 
 function getFaviconUrl(url) {
   try {
@@ -82,17 +129,26 @@ function createTabItem(tab, options = {}) {
     displayTitle = stripTitlePrefixMark(displayTitle) || '(無標題)';
   }
 
-  const favicon = document.createElement('img');
+  const favicon = isTerminated
+    ? document.createElement('span')
+    : document.createElement('img');
   favicon.className = 'tab-favicon';
-  favicon.loading = 'lazy';
-  favicon.src = FAVICON_PLACEHOLDER;
-  const faviconUrl = tab.favIconUrl || getFaviconUrl(displayUrl) || '';
-  if (faviconUrl) favicon.dataset.faviconUrl = faviconUrl;
-  favicon.alt = '';
-  favicon.onerror = () => {
+  if (isTerminated) {
+    favicon.classList.add('tab-sleeping-icon');
+    favicon.textContent = SLEEPING_TAB_ICON;
+    favicon.setAttribute('role', 'img');
+    favicon.setAttribute('aria-label', '睡眠中');
+  } else {
+    favicon.loading = 'lazy';
     favicon.src = FAVICON_PLACEHOLDER;
-    delete favicon.dataset.faviconUrl;
-  };
+    const faviconUrl = tab.favIconUrl || getFaviconUrl(displayUrl) || '';
+    if (faviconUrl) favicon.dataset.faviconUrl = faviconUrl;
+    favicon.alt = '';
+    favicon.onerror = () => {
+      favicon.src = FAVICON_PLACEHOLDER;
+      delete favicon.dataset.faviconUrl;
+    };
+  }
 
   const info = document.createElement('div');
   info.className = 'tab-info';
@@ -131,7 +187,7 @@ function createTabItem(tab, options = {}) {
     const policySelect = document.createElement('select');
     policySelect.className = 'tab-policy-select';
     policySelect.dataset.role = 'tab-policy-mode';
-    policySelect.setAttribute('aria-label', '自動 End Task 分頁政策');
+    policySelect.setAttribute('aria-label', '自動釋放分頁政策');
 
     const optionDefault = document.createElement('option');
     optionDefault.value = 'default';
@@ -174,7 +230,7 @@ function createTabItem(tab, options = {}) {
   primaryBtn.type = 'button';
   primaryBtn.className = isTerminated ? 'restore-btn' : 'end-task-btn';
   primaryBtn.dataset.action = isTerminated ? 'restore' : 'end-task';
-  primaryBtn.textContent = isTerminated ? 'Restore' : 'End Task';
+  primaryBtn.textContent = isTerminated ? '喚醒' : '釋放';
   actions.appendChild(primaryBtn);
 
   item.appendChild(favicon);
@@ -219,7 +275,7 @@ async function restoreTab(tabId, itemEl) {
   if (!btn) return;
 
   btn.disabled = true;
-  btn.textContent = '恢復中...';
+  btn.textContent = '喚醒中...';
 
   try {
     const terminatedMap = await terminatedStorage.getAll();
@@ -240,23 +296,18 @@ async function restoreTab(tabId, itemEl) {
     const liveBtn = row.querySelector('.restore-btn');
     if (liveBtn) {
       liveBtn.disabled = false;
-      liveBtn.textContent = 'Restore';
+      liveBtn.textContent = '喚醒';
     }
-    alert(`恢復失敗：${err.message}`);
+    alert(`喚醒失敗：${err.message}`);
   }
 }
 
 async function endTask(tabId, itemEl, tab) {
-  if (!chrome.processes) {
-    showError('chrome.processes API 不支援。請使用 Chrome Dev channel。');
-    return;
-  }
-
   const btn = itemEl.querySelector('.end-task-btn');
   if (!btn) return;
 
   btn.disabled = true;
-  btn.textContent = '終止中...';
+  btn.textContent = '釋放中...';
 
   try {
     const [tabPoliciesRaw, allTabs] = await Promise.all([
@@ -265,8 +316,8 @@ async function endTask(tabId, itemEl, tab) {
     ]);
     const tabPolicies = AutoEndRules.normalizeTabPolicies(tabPoliciesRaw);
 
-    const result = await EndTaskCore.terminateTabProcess(tab, {
-      prefixTitle: true,
+    const result = await requestReleaseTab(tab, {
+      prefixTitle: EndTaskCore.getReleaseBackend() === 'terminate',
       maybeHasActiveTabAccess: !!tab.active,
       allTabs,
       terminatedStorage,
@@ -304,6 +355,7 @@ async function endTask(tabId, itemEl, tab) {
       });
     }
   } catch (err) {
+    if (isPopupClosedError(err)) return;
     if (EndTaskCore.isProcessNotFoundError(err)) {
       const policies = AutoEndRules.normalizeTabPolicies(
         await protectedTabStorage.getAll()
@@ -325,12 +377,16 @@ async function endTask(tabId, itemEl, tab) {
     const liveBtn = row.querySelector('.end-task-btn');
     if (liveBtn) {
       liveBtn.disabled = false;
-      liveBtn.textContent = 'End Task';
+      liveBtn.textContent = '釋放';
     }
-    if (err?.code === 'TERMINATE_FAILED' || err?.code === 'BUILT_IN_PAGE') {
-      alert('無法終止此 process，可能是內建頁面或受保護的分頁。');
+    if (
+      err?.code === 'TERMINATE_FAILED' ||
+      err?.code === 'BUILT_IN_PAGE' ||
+      err?.code === 'DISCARD_FAILED'
+    ) {
+      alert('無法釋放此分頁，可能是內建頁面或受保護的分頁。');
     } else {
-      alert(`終止失敗：${err.message}`);
+      alert(`釋放失敗：${err.message}`);
     }
   }
 }
@@ -416,15 +472,13 @@ async function filterTabsForEndTaskAll(tabs) {
 }
 
 async function endTaskAll() {
-  if (!chrome.processes) return;
-
   const items = [...tabList.querySelectorAll('.tab-item')].filter((item) =>
     item.querySelector('.end-task-btn')
   );
   if (items.length === 0) return;
 
   endTaskAllBtn.disabled = true;
-  endTaskAllBtn.textContent = '終止中...';
+  endTaskAllBtn.textContent = '釋放中...';
   DebugLog?.info('endTaskAll start', { uiCount: items.length });
 
   try {
@@ -456,16 +510,16 @@ async function endTaskAll() {
     if (allowed.length === 0) {
       alert(
         skipped.length > 0
-          ? `沒有可終止的分頁（${skipped.length} 個為 Never Close，已略過）。`
-          : '沒有可終止的分頁。'
+          ? `沒有可釋放的分頁（${skipped.length} 個為 Never Close，已略過）。`
+          : '沒有可釋放的分頁。'
       );
       return;
     }
 
     const allTabs = await chrome.tabs.query({});
 
-    const result = await EndTaskCore.terminateTabsBatch(allowed, {
-      prefixTitle: true,
+    const result = await requestReleaseTabs(allowed, {
+      prefixTitle: EndTaskCore.getReleaseBackend() === 'terminate',
       concurrency: EndTaskCore.DEFAULT_CONCURRENCY,
       allTabs,
       terminatedStorage,
@@ -501,16 +555,24 @@ async function endTaskAll() {
       const firstErr = results.find((item) => item?.error)?.error;
       alert(
         firstErr
-          ? `批次終止失敗：${firstErr.message || firstErr}`
-          : '未能終止任何分頁。請確認使用 Edge/Chrome Dev，且 chrome.processes 可用。可按「複製 Log」回報。'
+          ? `批次釋放失敗：${firstErr.message || firstErr}`
+          : '未能釋放任何分頁。可按「複製 Log」回報。'
       );
     }
   } catch (err) {
+    if (isPopupClosedError(err)) {
+      try {
+        await loadTabs();
+      } catch {
+        // Popup is likely closing.
+      }
+      return;
+    }
     DebugLog?.error('endTaskAll exception', { message: String(err?.message || err) });
-    alert(`批次終止失敗：${err.message}`);
+    alert(`批次釋放失敗：${err.message}`);
   } finally {
     endTaskAllBtn.disabled = false;
-    endTaskAllBtn.textContent = 'End Task All';
+    endTaskAllBtn.textContent = '全部釋放';
   }
 }
 
@@ -581,19 +643,19 @@ async function restoreAll() {
   });
 
   if (tabIds.length === 0) {
-    alert('沒有可恢復的分頁（列表中無 Restore，storage 亦無 terminated 記錄）。');
+    alert('沒有可喚醒的分頁（列表中無喚醒按鈕，storage 亦無 terminated 記錄）。');
     return;
   }
 
   if (restoreAllBtn) {
     restoreAllBtn.disabled = true;
-    restoreAllBtn.textContent = '恢復中...';
+    restoreAllBtn.textContent = '喚醒中...';
   }
   for (const item of uiRestoreItems) {
     const btn = item.querySelector('.restore-btn');
     if (btn) {
       btn.disabled = true;
-      btn.textContent = '恢復中...';
+      btn.textContent = '喚醒中...';
     }
   }
 
@@ -624,13 +686,13 @@ async function restoreAll() {
     });
 
     if (succeededIds.length === 0 && failedIds.length > 0) {
-      alert('Restore All 失敗：無法重新載入分頁。可按「複製 Log」回報。');
+      alert('全部喚醒失敗：無法重新載入分頁。可按「複製 Log」回報。');
     } else if (failedIds.length > 0) {
-      alert(`部分分頁恢復失敗（${failedIds.length}/${tabIds.length}）。`);
+      alert(`部分分頁喚醒失敗（${failedIds.length}/${tabIds.length}）。`);
     }
   } catch (err) {
     DebugLog?.error('restoreAll exception', { message: String(err?.message || err) });
-    alert(`Restore All 失敗：${err.message}`);
+    alert(`全部喚醒失敗：${err.message}`);
     try {
       await loadTabs();
     } catch {
@@ -639,21 +701,17 @@ async function restoreAll() {
   } finally {
     if (restoreAllBtn) {
       restoreAllBtn.disabled = false;
-      restoreAllBtn.textContent = 'Restore All';
+      restoreAllBtn.textContent = '全部喚醒';
     }
   }
 }
 
 async function loadTabs() {
-  if (!chrome.processes) {
-    showError('chrome.processes API 不支援。請使用 Chrome Dev channel。');
-    return;
-  }
-
   tabList.innerHTML = '<div class="loading-state">載入中...</div>';
   tabList.classList.remove('hidden');
   errorMessage.classList.add('hidden');
   emptyState.classList.add('hidden');
+  showFallbackNotice(EndTaskCore.getReleaseBackend() === 'discard');
 
   try {
     const [tabs, terminatedDataRaw, protectedDataRaw, { autoEndTask }] =
@@ -696,14 +754,22 @@ async function loadTabs() {
       return;
     }
 
-    // Mark tabs whose process is already gone but not in storage.
-    validTerminated = await EndTaskCore.reconcileDeadTabs(
-      filteredTabs,
-      validTerminated,
-      terminatedStorage
-    );
-    // Do NOT reconcileRevivedTabs here: error-page processes after End Task look
-    // "alive" and would wipe terminated markers, leaving Restore All with nothing.
+    if (EndTaskCore.getReleaseBackend() === 'discard') {
+      validTerminated = await EndTaskCore.reconcileDiscardedTabs(
+        filteredTabs,
+        validTerminated,
+        terminatedStorage
+      );
+    } else {
+      // Mark tabs whose process is already gone but not in storage.
+      validTerminated = await EndTaskCore.reconcileDeadTabs(
+        filteredTabs,
+        validTerminated,
+        terminatedStorage
+      );
+      // Do NOT reconcileRevivedTabs here: error-page processes after End Task look
+      // "alive" and would wipe terminated markers, leaving 喚醒 with nothing.
+    }
 
     DebugLog?.info('loadTabs', {
       tabCount: filteredTabs.length,
@@ -964,7 +1030,7 @@ function saveAutoEndSettings() {
   });
 
   if (enabledEl.checked && idleMinutes < 5) {
-    alert('閒置分鐘數低於 5 分鐘可能導致分頁頻繁被終止，請謹慎使用。');
+    alert('閒置分鐘數低於 5 分鐘可能導致分頁頻繁被釋放，請謹慎使用。');
   }
 }
 
@@ -1146,6 +1212,7 @@ document.addEventListener('DOMContentLoaded', () => {
   DebugLog?.info('popup open', {
     version: chrome.runtime.getManifest()?.version,
     hasProcesses: !!chrome.processes,
+    backend: EndTaskCore.getReleaseBackend(),
   });
 
   AutoEndRules.ensureAutoEndRulesMigrated()

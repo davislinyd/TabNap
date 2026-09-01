@@ -55,6 +55,16 @@ body {
   color: #666;
 }
 
+.fallback-notice {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #fff8e1;
+  color: #5d4037;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .auto-end-settings {
   margin-top: 12px;
   padding-top: 12px;
@@ -395,6 +405,14 @@ body {
   height: 20px;
   flex-shrink: 0;
   border-radius: 4px;
+}
+
+.tab-sleeping-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  line-height: 20px;
 }
 
 .tab-info {
