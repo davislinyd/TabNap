@@ -84,12 +84,20 @@ flowchart LR
 
 ## 安裝方式
 
+原始碼留在專案根目錄。可載入的擴充功能由建置寫入 `dist/`：
+
+```sh
+node scripts/build-dist.js
+```
+
+建置只更新自己產生的檔案。`dist/` 裡既有、不屬於這次建置的檔案會保留。輸出目錄若與來源目錄重疊，建置會停止。
+
 ### Chrome / Edge / Brave
 
 1. 前往 `chrome://extensions` 或 `edge://extensions`
 2. 開啟「開發人員模式」
 3. 點擊「載入未封裝項目」
-4. 選擇本專案資料夾
+4. 選擇本專案的 `dist` 資料夾
 
 開發版（Chrome Dev / Edge Dev）可使用完整 End Task；穩定版會自動降級為 Discard。
 
@@ -121,6 +129,7 @@ flowchart LR
 ├── background.js                 # Service Worker（快捷鍵、自動釋放、訊息）
 ├── prefix-tab-title.js           # 釋放前注入標題標記與睡眠 favicon
 ├── icons/                        # 擴充功能圖示
+├── scripts/build-dist.js         # 將可載入擴充功能組到 dist/
 ├── docs/diagrams/                # 架構與流程圖
 ├── store/                        # Chrome Web Store 文案與截圖
 ├── test/                         # 純函式測試
