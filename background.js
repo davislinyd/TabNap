@@ -3,6 +3,7 @@ importScripts('auto-end-rules.js', 'prefix-tab-title.js', 'end-task-core.js');
 const terminatedStorage = AutoEndRules.getTerminatedTabsStorage();
 const protectedTabStorage = AutoEndRules.getProtectedTabsStorage();
 const AUTO_END_ALARM = 'auto-end-task';
+const TAB_RELEASE_MENU_ID = 'tabnap-release-tab';
 
 /** In-memory cache of auto-end rules; refreshed on storage changes / startup. */
 let cachedAutoEndRules = null;
@@ -149,12 +150,53 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
 });
 
+function callContextMenu(method, ...args) {
+  return new Promise((resolve, reject) => {
+    try {
+      method(...args, () => {
+        const err = chrome.runtime.lastError;
+        if (err) reject(new Error(err.message));
+        else resolve();
+      });
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+let tabReleaseMenuTask = Promise.resolve();
+
+function ensureTabReleaseMenu() {
+  tabReleaseMenuTask = tabReleaseMenuTask
+    .catch(() => {})
+    .then(async () => {
+      if (!chrome.contextMenus) return;
+      try {
+        await callContextMenu(
+          chrome.contextMenus.remove.bind(chrome.contextMenus),
+          TAB_RELEASE_MENU_ID
+        );
+      } catch {
+        // Item is absent on first install.
+      }
+      await callContextMenu(chrome.contextMenus.create.bind(chrome.contextMenus), {
+        id: TAB_RELEASE_MENU_ID,
+        title: '釋放分頁',
+        contexts: ['tab'],
+      });
+    });
+  return tabReleaseMenuTask;
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   loadRulesIntoCache().catch((err) => {
     console.error('Failed to initialize auto end rules:', err);
   });
   syncAlarmWithSettings().catch((err) => {
     console.error('Failed to sync auto end alarm:', err);
+  });
+  ensureTabReleaseMenu().catch((err) => {
+    console.warn('Tab context menu unavailable:', err);
   });
 });
 
@@ -164,6 +206,10 @@ loadRulesIntoCache().catch((err) => {
 
 syncAlarmWithSettings().catch((err) => {
   console.error('Failed to sync auto end alarm:', err);
+});
+
+ensureTabReleaseMenu().catch((err) => {
+  console.warn('Tab context menu unavailable:', err);
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -234,6 +280,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
     });
   return true;
+});
+
+async function releaseTabsFromContextMenu(clickedTab) {
+  if (clickedTab?.id == null) return;
+  const highlighted = await chrome.tabs.query({
+    highlighted: true,
+    windowId: clickedTab.windowId,
+  });
+  const targets = EndTaskCore.tabsForContextMenuRelease(clickedTab, highlighted);
+  if (targets.length === 0) {
+    console.warn('Cannot release built-in pages');
+    return;
+  }
+  await releaseTabsByIds(targets.map((tab) => tab.id));
+}
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== TAB_RELEASE_MENU_ID) return;
+  releaseTabsFromContextMenu(tab).catch((err) => {
+    console.error('Failed to release tabs from context menu:', err);
+  });
 });
 
 chrome.commands.onCommand.addListener(async (command) => {

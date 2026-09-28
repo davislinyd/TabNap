@@ -24,6 +24,32 @@
     );
   }
 
+  /**
+   * Tabs to release from a tab-strip context menu click.
+   * A highlighted set is used only when the clicked tab is part of it.
+   */
+  function tabsForContextMenuRelease(clickedTab, highlightedTabs) {
+    if (clickedTab?.id == null) return [];
+    const highlighted = Array.isArray(highlightedTabs) ? highlightedTabs : [];
+    const inSelection = highlighted.some((tab) => tab?.id === clickedTab.id);
+    const source = inSelection ? highlighted : [clickedTab];
+    const seen = new Set();
+    const targets = [];
+    for (const tab of source) {
+      if (tab?.id == null || seen.has(tab.id) || isBuiltInPage(tab.url)) continue;
+      if (
+        clickedTab.windowId != null &&
+        tab.windowId != null &&
+        tab.windowId !== clickedTab.windowId
+      ) {
+        continue;
+      }
+      seen.add(tab.id);
+      targets.push(tab);
+    }
+    return targets;
+  }
+
   function hasProcessesApi() {
     return typeof chrome !== 'undefined' && !!chrome.processes;
   }
@@ -1182,6 +1208,7 @@
     retainDeadTabEntries,
     runWithConcurrency,
     storedInfoFromTab,
+    tabsForContextMenuRelease,
     terminateTabProcess,
     terminateTabsBatch,
     verifyTabProcessStates,
