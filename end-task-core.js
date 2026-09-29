@@ -397,6 +397,7 @@
         targets.map((tab) =>
           setTabSleepingIcon(tab.id, tab.url, {
             maybeHasActiveTabAccess: !!tab.active,
+            faviconUrl: tab.favIconUrl,
           }).catch(() => false)
         )
       );
