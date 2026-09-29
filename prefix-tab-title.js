@@ -364,7 +364,9 @@ async function setTabSleepingIcon(tabId, url, options = {}) {
             const z = layout.zzz;
             ctx.drawImage(original, o.x * scale, o.y * scale, o.size * scale, o.size * scale);
             ctx.drawImage(zzz, z.x * scale, z.y * scale, z.size * scale, z.size * scale);
-            href = canvas.toDataURL('image/png');
+            // Default type is PNG. Keep this call free of a quoted argument:
+            // scripts/build-dist.js would read it as a CSS asset reference.
+            href = canvas.toDataURL();
             size = box * scale;
           } catch {
             // keep href/size of the plain sleeping icon
