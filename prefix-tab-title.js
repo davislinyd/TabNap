@@ -148,8 +148,8 @@ const SLEEPING_FAVICON_LAYOUT = {
   zzz: { x: 0, y: 4.5, size: 7 },
   original: { x: 6, y: 3, size: 10 },
 };
-/** Leave headroom inside SLEEPING_ICON_TIMEOUT_MS so the plain-icon fallback still lands. */
-const SLEEPING_FAVICON_FETCH_MS = 500;
+/** Leave headroom inside SLEEPING_ICON_TIMEOUT_MS for the page injection that follows. */
+const SLEEPING_FAVICON_FETCH_MS = 1500;
 const SLEEPING_FAVICON_MAX_BYTES = 256 * 1024;
 const SLEEPING_FAVICON_CACHE_MAX = 64;
 const SLEEPING_FAVICON_SCHEMES = ['http:', 'https:', 'data:'];
@@ -292,8 +292,10 @@ function composeSleepingFavicon(originalUrl) {
 /**
  * Set the browser tab favicon before its renderer is terminated or discarded.
  * The marker persists in the tab strip while Chromium keeps the tab discarded.
- * Shows the sleeping icon beside the original favicon (options.faviconUrl) when
- * it can be composed; otherwise falls back to the sleeping icon alone.
+ * Shows the sleeping icon beside the original favicon (options.faviconUrl). When
+ * the tab has a favicon that cannot be composed, it is left untouched (resolves
+ * false) so the tab stays recognisable; the sleeping icon alone is used only for
+ * tabs without a favicon.
  */
 async function setTabSleepingIcon(tabId, url, options = {}) {
   if (!chrome.scripting || !chrome.runtime?.getURL) return false;
@@ -326,6 +328,7 @@ async function setTabSleepingIcon(tabId, url, options = {}) {
   try {
     const composed = await composedPromise;
     const compositeUrl = composed?.composite || null;
+    if (faviconUrl && !compositeUrl && !composed?.svg) return false;
     const iconUrl = compositeUrl || chrome.runtime.getURL('icons/icon16.png');
     const iconSize = compositeUrl ? SLEEPING_FAVICON_BOX * SLEEPING_FAVICON_SCALE : 16;
     const spec = {
@@ -343,7 +346,7 @@ async function setTabSleepingIcon(tabId, url, options = {}) {
         let size = sleepingIconSize;
         if (svg) {
           // Rasterise the SVG favicon here; workers cannot decode it. Data URLs
-          // keep the canvas untainted. Any failure keeps the plain sleeping icon.
+          // keep the canvas untainted. On failure the original favicon is kept.
           try {
             const load = (src) =>
               new Promise((resolve, reject) => {
@@ -369,7 +372,7 @@ async function setTabSleepingIcon(tabId, url, options = {}) {
             href = canvas.toDataURL();
             size = box * scale;
           } catch {
-            // keep href/size of the plain sleeping icon
+            return;
           }
         }
 

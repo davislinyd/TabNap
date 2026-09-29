@@ -192,11 +192,18 @@ const fetchCount = (url) => fetched.filter((f) => f.url === url).length;
     'svg args'
   );
 
-  await setTabSleepingIcon(3, 'https://example.com/', { faviconUrl: 'chrome://favicon/x' });
-  assertJson(injected[2].args, [ZZZ_URL, 16, null, spec], 'fallback args (unsupported scheme)');
+  // A favicon that cannot be composed is left alone, never replaced by the bare sleeping icon.
+  for (const faviconUrl of ['chrome://favicon/x', missingUrl, hugeUrl]) {
+    assertEqual(
+      await setTabSleepingIcon(3, 'https://example.com/', { faviconUrl }),
+      false,
+      `keep original favicon (${faviconUrl})`
+    );
+  }
+  assertEqual(injected.length, 2, 'uncomposable favicon: nothing injected');
 
   await setTabSleepingIcon(4, 'https://example.com/', {});
-  assertJson(injected[3].args, [ZZZ_URL, 16, null, spec], 'fallback args (no favicon)');
+  assertJson(injected[2].args, [ZZZ_URL, 16, null, spec], 'fallback args (no favicon)');
 
   // Injected function: idempotent when already marked, otherwise marks and rewrites links.
   const func = injected[0].func;
@@ -262,10 +269,15 @@ const fetchCount = (url) => fetched.filter((f) => f.url === url).length;
     'svg: draw layout'
   );
 
-  // SVG that fails to load in the page keeps the plain sleeping icon.
-  const failed = await runInPage({ args: [ZZZ_URL, 16, svgPayload, spec], imageFails: true });
-  assertEqual(failed.appended[0].href, ZZZ_URL, 'svg failure: plain href');
-  assertEqual(failed.appended[0].sizes, '16x16', 'svg failure: plain sizes');
+  // SVG that fails to load in the page keeps the original favicon untouched.
+  const keptLink = { href: 'https://example.com/favicon.svg' };
+  const failed = await runInPage({
+    existingLinks: [keptLink],
+    args: [ZZZ_URL, 16, svgPayload, spec],
+    imageFails: true,
+  });
+  assertEqual(failed.created.length, 0, 'svg failure: no marker link');
+  assertEqual(keptLink.href, 'https://example.com/favicon.svg', 'svg failure: original link kept');
 
   console.log('sleeping-favicon tests passed');
 })().catch((err) => {

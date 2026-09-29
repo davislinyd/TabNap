@@ -11,7 +11,7 @@
   const PREFIX_SINGLE_MS = 1000;
   const PREFIX_BATCH_PER_TAB_MS = 350;
   const PREFIX_BATCH_GROUP_MS = 700;
-  const SLEEPING_ICON_TIMEOUT_MS = 1000;
+  const SLEEPING_ICON_TIMEOUT_MS = 2000;
   const PROBE_STATE_ALIVE = 'alive';
   const PROBE_STATE_DEAD = 'dead';
   const PROBE_STATE_UNKNOWN = 'unknown';
