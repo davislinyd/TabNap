@@ -150,11 +150,12 @@ const SLEEPING_FAVICON_LAYOUT = {
 };
 /** Leave headroom inside SLEEPING_ICON_TIMEOUT_MS so the plain-icon fallback still lands. */
 const SLEEPING_FAVICON_FETCH_MS = 500;
+const SLEEPING_FAVICON_MAX_BYTES = 256 * 1024;
 const SLEEPING_FAVICON_CACHE_MAX = 64;
 const SLEEPING_FAVICON_SCHEMES = ['http:', 'https:', 'data:'];
 
 const sleepingFaviconCache = new Map();
-let sleepingIconBitmapPromise = null;
+let sleepingIconAssetPromise = null;
 
 function bytesToBase64(bytes) {
   let binary = '';
@@ -164,26 +165,44 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
-async function fetchImageBitmap(url) {
-  const init = {};
+async function blobToDataUrl(blob, mimeType) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  return `data:${mimeType};base64,${bytesToBase64(bytes)}`;
+}
+
+async function fetchFaviconBlob(url) {
+  // Extension fetches with host permission skip CORS; include cookies for
+  // intranet favicons that sit behind a login.
+  const init = { credentials: 'include' };
   if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
     init.signal = AbortSignal.timeout(SLEEPING_FAVICON_FETCH_MS);
   }
   const response = await fetch(url, init);
   if (!response.ok) throw new Error(`favicon fetch failed: ${response.status}`);
-  return createImageBitmap(await response.blob());
+  const blob = await response.blob();
+  if (blob.size > SLEEPING_FAVICON_MAX_BYTES) throw new Error('favicon too large');
+  return blob;
 }
 
-function getSleepingIconBitmap() {
-  if (!sleepingIconBitmapPromise) {
-    sleepingIconBitmapPromise = fetchImageBitmap(
-      chrome.runtime.getURL('icons/icon16.png')
-    ).catch((err) => {
-      sleepingIconBitmapPromise = null;
-      throw err;
-    });
+/** Workers cannot decode SVG, so it is rasterised inside the page instead. */
+async function looksLikeSvg(blob) {
+  const type = String(blob.type || '');
+  if (/svg/i.test(type)) return true;
+  // Servers often label SVG as text/plain or octet-stream; sniff those.
+  if (type && !/^(text\/|application\/(octet-stream|xml))/i.test(type)) return false;
+  return /<svg[\s>]/i.test(await blob.slice(0, 1024).text());
+}
+
+function getSleepingIconAsset() {
+  if (!sleepingIconAssetPromise) {
+    sleepingIconAssetPromise = fetchFaviconBlob(chrome.runtime.getURL('icons/icon16.png'))
+      .then(async (blob) => ({ blob, dataUrl: await blobToDataUrl(blob, 'image/png') }))
+      .catch((err) => {
+        sleepingIconAssetPromise = null;
+        throw err;
+      });
   }
-  return sleepingIconBitmapPromise;
+  return sleepingIconAssetPromise;
 }
 
 async function drawSleepingFavicon(originalUrl) {
@@ -191,9 +210,24 @@ async function drawSleepingFavicon(originalUrl) {
     return null;
   }
 
+  const [zzzAsset, originalBlob] = await Promise.all([
+    getSleepingIconAsset(),
+    fetchFaviconBlob(originalUrl),
+  ]);
+
+  if (await looksLikeSvg(originalBlob)) {
+    return {
+      composite: null,
+      svg: {
+        original: await blobToDataUrl(originalBlob, 'image/svg+xml'),
+        zzz: zzzAsset.dataUrl,
+      },
+    };
+  }
+
   const [zzz, original] = await Promise.all([
-    getSleepingIconBitmap(),
-    fetchImageBitmap(originalUrl),
+    createImageBitmap(zzzAsset.blob),
+    createImageBitmap(originalBlob),
   ]);
 
   const scale = SLEEPING_FAVICON_SCALE;
@@ -209,18 +243,20 @@ async function drawSleepingFavicon(originalUrl) {
   ctx.drawImage(original, o.x * scale, o.y * scale, o.size * scale, o.size * scale);
   ctx.drawImage(zzz, z.x * scale, z.y * scale, z.size * scale, z.size * scale);
   original.close?.();
+  zzz.close?.();
 
   const blob = await canvas.convertToBlob({ type: 'image/png' });
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  return `data:image/png;base64,${bytesToBase64(bytes)}`;
+  return { composite: await blobToDataUrl(blob, 'image/png'), svg: null };
 }
 
 /**
- * Build a 16x16 favicon with the sleeping icon on the left and the tab's original
- * favicon on the right. Resolves to a PNG data URL, or null when the original
- * favicon is unavailable or cannot be decoded (e.g. SVG in a worker).
+ * Prepare a 16x16 favicon with the sleeping icon on the left and the tab's
+ * original favicon on the right. Resolves to:
+ * - `{ composite }`: a ready PNG data URL (raster favicons, composed here);
+ * - `{ svg: { original, zzz } }`: SVG data URLs for the page to compose;
+ * - `null`: the original favicon is unavailable or undecodable.
  * @param {string|undefined|null} originalUrl tab.favIconUrl
- * @returns {Promise<string|null>}
+ * @returns {Promise<{ composite: string|null, svg: { original: string, zzz: string }|null }|null>}
  */
 function composeSleepingFavicon(originalUrl) {
   if (typeof originalUrl !== 'string' || !originalUrl) return Promise.resolve(null);
@@ -236,7 +272,10 @@ function composeSleepingFavicon(originalUrl) {
   const cached = sleepingFaviconCache.get(originalUrl);
   if (cached) return cached;
 
-  const pending = drawSleepingFavicon(originalUrl).catch(() => null);
+  const pending = drawSleepingFavicon(originalUrl).catch((err) => {
+    console.warn('composeSleepingFavicon failed:', originalUrl.slice(0, 200), err);
+    return null;
+  });
   if (sleepingFaviconCache.size >= SLEEPING_FAVICON_CACHE_MAX) {
     sleepingFaviconCache.delete(sleepingFaviconCache.keys().next().value);
   }
@@ -285,29 +324,67 @@ async function setTabSleepingIcon(tabId, url, options = {}) {
   }
 
   try {
-    const composedUrl = await composedPromise;
-    const iconUrl = composedUrl || chrome.runtime.getURL('icons/icon16.png');
-    const iconSize = composedUrl ? SLEEPING_FAVICON_BOX * SLEEPING_FAVICON_SCALE : 16;
+    const composed = await composedPromise;
+    const compositeUrl = composed?.composite || null;
+    const iconUrl = compositeUrl || chrome.runtime.getURL('icons/icon16.png');
+    const iconSize = compositeUrl ? SLEEPING_FAVICON_BOX * SLEEPING_FAVICON_SCALE : 16;
+    const spec = {
+      box: SLEEPING_FAVICON_BOX,
+      scale: SLEEPING_FAVICON_SCALE,
+      layout: SLEEPING_FAVICON_LAYOUT,
+    };
     await chrome.scripting.executeScript({
       target: { tabId },
-      func: (sleepingIconUrl, sleepingIconSize) => {
+      func: async (sleepingIconUrl, sleepingIconSize, svg, faviconSpec) => {
         // Already marked (icon may be composite); do not compose on top of it.
         if (document.querySelector('link[data-tabnap-sleeping-icon]')) return;
+
+        let href = sleepingIconUrl;
+        let size = sleepingIconSize;
+        if (svg) {
+          // Rasterise the SVG favicon here; workers cannot decode it. Data URLs
+          // keep the canvas untainted. Any failure keeps the plain sleeping icon.
+          try {
+            const load = (src) =>
+              new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.onerror = () => reject(new Error('image load failed'));
+                img.src = src;
+              });
+            const [original, zzz] = await Promise.all([load(svg.original), load(svg.zzz)]);
+            const { box, scale, layout } = faviconSpec;
+            const canvas = document.createElement('canvas');
+            canvas.width = box * scale;
+            canvas.height = box * scale;
+            const ctx = canvas.getContext('2d');
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            const o = layout.original;
+            const z = layout.zzz;
+            ctx.drawImage(original, o.x * scale, o.y * scale, o.size * scale, o.size * scale);
+            ctx.drawImage(zzz, z.x * scale, z.y * scale, z.size * scale, z.size * scale);
+            href = canvas.toDataURL('image/png');
+            size = box * scale;
+          } catch {
+            // keep href/size of the plain sleeping icon
+          }
+        }
 
         const iconLinks = [...document.querySelectorAll('link[rel~="icon"]')];
         const iconLink = document.createElement('link');
         iconLink.rel = 'icon';
         iconLink.type = 'image/png';
-        iconLink.sizes = `${sleepingIconSize}x${sleepingIconSize}`;
-        iconLink.href = sleepingIconUrl;
+        iconLink.sizes = `${size}x${size}`;
+        iconLink.href = href;
         iconLink.dataset.tabnapSleepingIcon = 'true';
 
         const parent = document.head || document.documentElement;
         if (parent) parent.appendChild(iconLink);
 
-        for (const link of iconLinks) link.href = sleepingIconUrl;
+        for (const link of iconLinks) link.href = href;
       },
-      args: [iconUrl, iconSize],
+      args: [iconUrl, iconSize, compositeUrl ? null : composed?.svg || null, spec],
     });
     // Give Chromium a brief chance to receive the favicon update before discard.
     await new Promise((resolve) => setTimeout(resolve, 50));

@@ -46,7 +46,7 @@ flowchart LR
 
 在 **Dev channel** 終止 **http / https / file（本地 HTML）** 分頁前（手動、快捷鍵、**全部釋放**），擴充功能會在 process 仍存活時 best-effort 於 `document.title` 前加上 ♻️，方便在分頁列辨識；**喚醒** 或瀏覽器自動復活後標題會恢復。注入有短逾時，失敗不阻擋釋放。若未授予站點／檔案存取權、或屬保護頁面，則跳過前綴但仍終止 process。**自動釋放**與穩定版 Discard 不會注入 ♻️。
 
-所有釋放方式都會在釋放前 best-effort 將瀏覽器分頁列的 favicon 換成「💤 + 原 favicon」並排（💤 在左、原 favicon 縮小在右），方便辨識是哪個網站；若無法取得或解碼原 favicon（如 SVG、`file://`），則只顯示 💤。喚醒後重新載入頁面，網站 favicon 會恢復。若頁面不允許注入，則維持原本的 favicon，不阻擋釋放。
+所有釋放方式都會在釋放前 best-effort 將瀏覽器分頁列的 favicon 換成「💤 + 原 favicon」並排（💤 在左、原 favicon 縮小在右），方便辨識是哪個網站；支援 PNG、ICO、SVG（含 `data:` URL）；若無法取得或解碼原 favicon（如 `file://` 頁面、下載逾時），則只顯示 💤。喚醒後重新載入頁面，網站 favicon 會恢復。若頁面不允許注入，則維持原本的 favicon，不阻擋釋放。
 
 **本地 `file://` 檔案：** 需在 `chrome://extensions`（或 `edge://extensions`）→ 本擴充功能「詳細資料」中開啟 **「允許存取檔案網址」／Allow access to file URLs**，非作用中分頁才能穩定注入標題前綴；對目前作用中分頁，透過點擊工具列圖示開啟 popup 時，`activeTab` 通常已足夠。
 
