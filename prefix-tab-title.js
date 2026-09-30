@@ -145,9 +145,19 @@ async function prefixTabTitleWithMarker(tabId, url, options = {}) {
 const SLEEPING_FAVICON_BOX = 16;
 const SLEEPING_FAVICON_SCALE = 2;
 const SLEEPING_FAVICON_LAYOUT = {
-  zzz: { x: 0, y: 4.5, size: 7 },
-  original: { x: 6, y: 3, size: 10 },
+  zzz: { x: 0, y: 4, size: 8 },
+  original: { x: 8, y: 4, size: 8 },
 };
+const SLEEPING_BADGE_PIXELS = [
+  '.....###',
+  '......#.',
+  '...#####',
+  '....#...',
+  '.#####..',
+  '..#.....',
+  '.###....',
+  '........',
+];
 /** Leave headroom inside SLEEPING_ICON_TIMEOUT_MS for the page injection that follows. */
 const SLEEPING_FAVICON_FETCH_MS = 1500;
 const SLEEPING_FAVICON_MAX_BYTES = 256 * 1024;
@@ -184,6 +194,13 @@ async function fetchFaviconBlob(url) {
   return blob;
 }
 
+function cachedFaviconUrl(pageUrl) {
+  const url = new URL(chrome.runtime.getURL('_favicon/'));
+  url.searchParams.set('pageUrl', pageUrl);
+  url.searchParams.set('size', '32');
+  return url.href;
+}
+
 /** Workers cannot decode SVG, so it is rasterised inside the page instead. */
 async function looksLikeSvg(blob) {
   const type = String(blob.type || '');
@@ -195,8 +212,22 @@ async function looksLikeSvg(blob) {
 
 function getSleepingIconAsset() {
   if (!sleepingIconAssetPromise) {
-    sleepingIconAssetPromise = fetchFaviconBlob(chrome.runtime.getURL('icons/icon16.png'))
-      .then(async (blob) => ({ blob, dataUrl: await blobToDataUrl(blob, 'image/png') }))
+    sleepingIconAssetPromise = (async () => {
+      const scale = SLEEPING_FAVICON_SCALE;
+      const size = SLEEPING_FAVICON_LAYOUT.zzz.size * scale;
+      const canvas = new OffscreenCanvas(size, size);
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#0a54b9';
+      ctx.fillRect(0, 0, size, size);
+      ctx.fillStyle = '#fff';
+      SLEEPING_BADGE_PIXELS.forEach((row, y) => {
+        for (let x = 0; x < row.length; x++) {
+          if (row[x] === '#') ctx.fillRect(x * scale, y * scale, scale, scale);
+        }
+      });
+      const blob = await canvas.convertToBlob({ type: 'image/png' });
+      return { blob, dataUrl: await blobToDataUrl(blob, 'image/png') };
+    })()
       .catch((err) => {
         sleepingIconAssetPromise = null;
         throw err;
@@ -258,32 +289,35 @@ async function drawSleepingFavicon(originalUrl) {
  * @param {string|undefined|null} originalUrl tab.favIconUrl
  * @returns {Promise<{ composite: string|null, svg: { original: string, zzz: string }|null }|null>}
  */
-function composeSleepingFavicon(originalUrl) {
+function composeSleepingFavicon(originalUrl, pageUrl) {
   if (typeof originalUrl !== 'string' || !originalUrl) return Promise.resolve(null);
 
+  let supported = false;
   try {
-    if (!SLEEPING_FAVICON_SCHEMES.includes(new URL(originalUrl).protocol)) {
-      return Promise.resolve(null);
-    }
-  } catch {
-    return Promise.resolve(null);
-  }
+    supported = SLEEPING_FAVICON_SCHEMES.includes(new URL(originalUrl).protocol);
+  } catch {}
+  if (!supported && !pageUrl) return Promise.resolve(null);
 
-  const cached = sleepingFaviconCache.get(originalUrl);
+  const cacheKey = `${originalUrl}\n${pageUrl || ''}`;
+  const cached = sleepingFaviconCache.get(cacheKey);
   if (cached) return cached;
 
-  const pending = drawSleepingFavicon(originalUrl).catch((err) => {
-    console.warn('composeSleepingFavicon failed:', originalUrl.slice(0, 200), err);
-    return null;
-  });
+  const pending = (supported ? drawSleepingFavicon(originalUrl) : Promise.reject(new Error('unsupported favicon URL')))
+    .catch((err) => {
+      if (!pageUrl) throw err;
+      return drawSleepingFavicon(cachedFaviconUrl(pageUrl));
+    }).catch((err) => {
+      console.warn('composeSleepingFavicon failed:', originalUrl.slice(0, 200), err);
+      return null;
+    });
   if (sleepingFaviconCache.size >= SLEEPING_FAVICON_CACHE_MAX) {
     sleepingFaviconCache.delete(sleepingFaviconCache.keys().next().value);
   }
-  sleepingFaviconCache.set(originalUrl, pending);
+  sleepingFaviconCache.set(cacheKey, pending);
   pending.then((result) => {
     // Do not pin failures; a later attempt may succeed.
-    if (!result && sleepingFaviconCache.get(originalUrl) === pending) {
-      sleepingFaviconCache.delete(originalUrl);
+    if (!result && sleepingFaviconCache.get(cacheKey) === pending) {
+      sleepingFaviconCache.delete(cacheKey);
     }
   });
   return pending;
@@ -314,7 +348,7 @@ async function setTabSleepingIcon(tabId, url, options = {}) {
   const originPattern = resolvedUrl ? getScriptableOriginPattern(resolvedUrl) : null;
   if (!originPattern) return false;
 
-  const composedPromise = composeSleepingFavicon(faviconUrl);
+  const composedPromise = composeSleepingFavicon(faviconUrl, resolvedUrl);
 
   // http(s) access is declared in manifest.json; avoid a permissions API round
   // trip for every tab in a large batch. File URLs still need the special check.
@@ -329,8 +363,8 @@ async function setTabSleepingIcon(tabId, url, options = {}) {
     const composed = await composedPromise;
     const compositeUrl = composed?.composite || null;
     if (faviconUrl && !compositeUrl && !composed?.svg) return false;
-    const iconUrl = compositeUrl || chrome.runtime.getURL('icons/icon16.png');
-    const iconSize = compositeUrl ? SLEEPING_FAVICON_BOX * SLEEPING_FAVICON_SCALE : 16;
+    const iconUrl = compositeUrl || chrome.runtime.getURL('icons/icon128.png');
+    const iconSize = compositeUrl ? SLEEPING_FAVICON_BOX * SLEEPING_FAVICON_SCALE : 128;
     const spec = {
       box: SLEEPING_FAVICON_BOX,
       scale: SLEEPING_FAVICON_SCALE,
@@ -376,7 +410,6 @@ async function setTabSleepingIcon(tabId, url, options = {}) {
           }
         }
 
-        const iconLinks = [...document.querySelectorAll('link[rel~="icon"]')];
         const iconLink = document.createElement('link');
         iconLink.rel = 'icon';
         iconLink.type = 'image/png';
@@ -386,8 +419,6 @@ async function setTabSleepingIcon(tabId, url, options = {}) {
 
         const parent = document.head || document.documentElement;
         if (parent) parent.appendChild(iconLink);
-
-        for (const link of iconLinks) link.href = href;
       },
       args: [iconUrl, iconSize, compositeUrl ? null : composed?.svg || null, spec],
     });

@@ -9,7 +9,7 @@ const code = fs.readFileSync(
   'utf8'
 );
 
-const ZZZ_URL = 'chrome-extension://test/icons/icon16.png';
+const ZZZ_URL = 'chrome-extension://test/icons/icon128.png';
 const B64 = 'AQID'; // base64 of the 3 bytes every fake blob yields
 const PNG_URL = `data:image/png;base64,${B64}`;
 
@@ -26,17 +26,20 @@ class FakeOffscreenCanvas {
     this.width = width;
     this.height = height;
     this.draws = [];
+    this.fills = [];
     canvases.push(this);
   }
 
   getContext() {
-    return {
+    const ctx = {
       drawImage: (bitmap, ...rect) => this.draws.push({ source: bitmap.source, rect }),
+      fillRect: (...rect) => this.fills.push({ color: ctx.fillStyle, rect }),
     };
+    return ctx;
   }
 
   async convertToBlob() {
-    return makeBlob('canvas');
+    return makeBlob(this.width === 16 ? 'badge' : 'canvas');
   }
 }
 
@@ -109,28 +112,33 @@ const fetchCount = (url) => fetched.filter((f) => f.url === url).length;
   }
   assertEqual(fetched.length, 0, 'skipped urls do not fetch');
 
-  // Raster: original on the right (10px @2x), zzz on the left (7px @2x, centered).
+  // Raster: equal 8px icons side-by-side, each rendered at 2x.
   const okUrl = 'https://example.com/favicon.png';
   const composed = await composeSleepingFavicon(okUrl);
   assertEqual(composed.composite, PNG_URL, 'composite data url');
   assertEqual(composed.svg, null, 'raster has no svg payload');
-  assertEqual(canvases[0].width, 32, 'canvas width');
-  assertEqual(canvases[0].height, 32, 'canvas height');
+  assertEqual(canvases[0].width, 16, 'badge width');
+  assertEqual(canvases[0].height, 16, 'badge height');
+  assertJson(canvases[0].fills[0], { color: '#0a54b9', rect: [0, 0, 16, 16] }, 'opaque badge');
+  assertEqual(canvases[0].fills.length, 20, 'three Z glyphs painted');
+  assertEqual(canvases[1].width, 32, 'canvas width');
+  assertEqual(canvases[1].height, 32, 'canvas height');
   assertJson(
-    canvases[0].draws,
+    canvases[1].draws,
     [
-      { source: okUrl, rect: [12, 6, 20, 20] },
-      { source: ZZZ_URL, rect: [0, 9, 14, 14] },
+      { source: okUrl, rect: [16, 8, 16, 16] },
+      { source: 'badge', rect: [0, 8, 16, 16] },
     ],
     'draw layout'
   );
   assertEqual(closedBitmaps, 2, 'bitmaps closed');
   assertEqual(fetched.find((f) => f.url === okUrl).init.credentials, 'include', 'favicon fetch sends cookies');
 
-  // Same URL is composed once; the sleeping icon itself is fetched once overall.
+  // Same URL is composed once; the sleeping badge is generated once overall.
   assertEqual(await composeSleepingFavicon(okUrl), composed, 'cached result');
   assertEqual(fetchCount(okUrl), 1, 'favicon fetched once');
-  assertEqual(fetchCount(ZZZ_URL), 1, 'sleeping icon fetched once');
+  assertEqual(fetchCount(ZZZ_URL), 0, 'sleeping badge generated locally');
+  assertEqual(canvases.filter((canvas) => canvas.width === 16).length, 1, 'badge generated once');
 
   // SVG (by content type) is handed to the page as data URLs, never decoded in the worker.
   const svgUrl = 'https://example.com/favicon.svg';
@@ -170,12 +178,27 @@ const fetchCount = (url) => fetched.filter((f) => f.url === url).length;
   const hugeUrl = 'https://example.com/huge.png';
   blobs.set(hugeUrl, { size: 512 * 1024 });
   assertEqual(await composeSleepingFavicon(hugeUrl), null, 'oversized favicon');
+  const cachedUrl = 'chrome-extension://test/_favicon/?pageUrl=https%3A%2F%2Fexample.com%2F&size=32';
+  blobs.set(cachedUrl, { ok: false });
+  assertEqual(await composeSleepingFavicon(missingUrl, 'https://example.com/'), null, 'cached icon unavailable');
+  blobs.delete(cachedUrl);
+  assertEqual(
+    (await composeSleepingFavicon(missingUrl, 'https://example.com/')).composite,
+    PNG_URL,
+    'failed download uses browser favicon cache'
+  );
+  assertEqual(
+    (await composeSleepingFavicon('chrome://favicon/x', 'https://example.com/')).composite,
+    PNG_URL,
+    'unsupported favicon URL uses browser favicon cache'
+  );
+  assertEqual(fetched.some((entry) => entry.url === cachedUrl), true, 'cache URL fetched');
 
   // setTabSleepingIcon: composite, svg hand-off, or the plain sleeping icon.
   const spec = {
     box: 16,
     scale: 2,
-    layout: { zzz: { x: 0, y: 4.5, size: 7 }, original: { x: 6, y: 3, size: 10 } },
+    layout: { zzz: { x: 0, y: 4, size: 8 }, original: { x: 8, y: 4, size: 8 } },
   };
   injected.length = 0;
   assertEqual(
@@ -188,14 +211,16 @@ const fetchCount = (url) => fetched.filter((f) => f.url === url).length;
   await setTabSleepingIcon(2, 'https://example.com/', { faviconUrl: svgUrl });
   assertJson(
     injected[1].args,
-    [ZZZ_URL, 16, { original: `data:image/svg+xml;base64,${B64}`, zzz: PNG_URL }, spec],
+    [ZZZ_URL, 128, { original: `data:image/svg+xml;base64,${B64}`, zzz: PNG_URL }, spec],
     'svg args'
   );
 
   // A favicon that cannot be composed is left alone, never replaced by the bare sleeping icon.
-  for (const faviconUrl of ['chrome://favicon/x', missingUrl, hugeUrl]) {
+  const unavailableCacheUrl = 'chrome-extension://test/_favicon/?pageUrl=https%3A%2F%2Funavailable.example%2F&size=32';
+  blobs.set(unavailableCacheUrl, { ok: false });
+  for (const faviconUrl of ['chrome://favicon/x', hugeUrl]) {
     assertEqual(
-      await setTabSleepingIcon(3, 'https://example.com/', { faviconUrl }),
+      await setTabSleepingIcon(3, 'https://unavailable.example/', { faviconUrl }),
       false,
       `keep original favicon (${faviconUrl})`
     );
@@ -203,9 +228,10 @@ const fetchCount = (url) => fetched.filter((f) => f.url === url).length;
   assertEqual(injected.length, 2, 'uncomposable favicon: nothing injected');
 
   await setTabSleepingIcon(4, 'https://example.com/', {});
-  assertJson(injected[2].args, [ZZZ_URL, 16, null, spec], 'fallback args (no favicon)');
+  assertJson(injected[2].args, [ZZZ_URL, 128, null, spec], 'fallback args (no favicon)');
 
-  // Injected function: idempotent when already marked, otherwise marks and rewrites links.
+  // Injected function: idempotent when already marked, otherwise appends a marker
+  // link without changing the page's original favicon links.
   const func = injected[0].func;
   const runInPage = async ({ existingMarker = null, existingLinks = [], args, imageFails = false }) => {
     const created = [];
@@ -251,7 +277,7 @@ const fetchCount = (url) => fetched.filter((f) => f.url === url).length;
   assertEqual(fresh.appended[0].href, 'data:x', 'fresh: marker href');
   assertEqual(fresh.appended[0].sizes, '32x32', 'fresh: marker sizes');
   assertEqual(fresh.appended[0].dataset.tabnapSleepingIcon, 'true', 'fresh: marker flag');
-  assertEqual(page.href, 'data:x', 'fresh: existing icon links rewritten');
+  assertEqual(page.href, 'https://example.com/favicon.png', 'fresh: original icon link preserved');
 
   // SVG payload: page rasterises both images onto a 32x32 canvas in the same layout.
   const svgPayload = { original: 'data:image/svg+xml;base64,ORIG', zzz: 'data:image/png;base64,ZZZ' };
@@ -259,12 +285,12 @@ const fetchCount = (url) => fetched.filter((f) => f.url === url).length;
   const drawn = await runInPage({ existingLinks: [svgLink], args: [ZZZ_URL, 16, svgPayload, spec] });
   assertEqual(drawn.appended[0].href, 'data:image/png;base64,PAGE', 'svg: composite href');
   assertEqual(drawn.appended[0].sizes, '32x32', 'svg: composite sizes');
-  assertEqual(svgLink.href, 'data:image/png;base64,PAGE', 'svg: existing links rewritten');
+  assertEqual(svgLink.href, 'https://example.com/favicon.svg', 'svg: original icon link preserved');
   assertJson(
     drawn.draws,
     [
-      { src: svgPayload.original, rect: [12, 6, 20, 20] },
-      { src: svgPayload.zzz, rect: [0, 9, 14, 14] },
+      { src: svgPayload.original, rect: [16, 8, 16, 16] },
+      { src: svgPayload.zzz, rect: [0, 8, 16, 16] },
     ],
     'svg: draw layout'
   );
@@ -273,7 +299,7 @@ const fetchCount = (url) => fetched.filter((f) => f.url === url).length;
   const keptLink = { href: 'https://example.com/favicon.svg' };
   const failed = await runInPage({
     existingLinks: [keptLink],
-    args: [ZZZ_URL, 16, svgPayload, spec],
+    args: [ZZZ_URL, 128, svgPayload, spec],
     imageFails: true,
   });
   assertEqual(failed.created.length, 0, 'svg failure: no marker link');

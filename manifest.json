@@ -1,13 +1,13 @@
 {
   "manifest_version": 3,
   "name": "TabNap",
-  "version": "1.2.3",
+  "version": "1.2.7",
   "description": "休眠閒置分頁以釋放記憶體；穩定版使用 Discard，Dev 版可終止 process",
-  "permissions": ["activeTab", "alarms", "contextMenus", "processes", "scripting", "storage", "tabs"],
+  "permissions": ["activeTab", "alarms", "contextMenus", "favicon", "processes", "scripting", "storage", "tabs"],
   "host_permissions": ["http://*/*", "https://*/*", "file:///*"],
   "web_accessible_resources": [
     {
-      "resources": ["icons/icon16.png"],
+      "resources": ["icons/icon16.png", "icons/icon128.png"],
       "matches": ["http://*/*", "https://*/*", "file:///*"]
     }
   ],
