@@ -44,9 +44,7 @@ flowchart LR
 - **全部喚醒**：一次喚醒目前視窗中所有已釋放的分頁
 - **快捷鍵**釋放當前分頁後，狀態會與 popup 同步（可喚醒）
 
-在 **Dev channel** 終止 **http / https / file（本地 HTML）** 分頁前（手動、快捷鍵、**全部釋放**），擴充功能會在 process 仍存活時 best-effort 於 `document.title` 前加上 ♻️，方便在分頁列辨識；**喚醒** 或瀏覽器自動復活後標題會恢復。注入有短逾時，失敗不阻擋釋放。若未授予站點／檔案存取權、或屬保護頁面，則跳過前綴但仍終止 process。**自動釋放**與穩定版 Discard 不會注入 ♻️。
-
-所有釋放方式都會在釋放前 best-effort 將瀏覽器分頁列的 favicon 加上「💤 + 原 favicon」並排（💤 在左、兩者同尺寸），方便辨識是哪個網站；支援 PNG、ICO、SVG（含 `data:` URL）。若無法直接取得原 favicon，會嘗試瀏覽器快取；兩者都無法解碼時保留原圖示。本來沒有 favicon 時才只顯示 💤。喚醒後重新載入頁面，網站 favicon 會恢復。若頁面不允許注入，則維持原本的 favicon，不阻擋釋放。
+所有釋放方式都會在釋放 **http / https / file（本地 HTML）** 分頁前，best-effort 於 `document.title` 最左側加上「💤 」：圖示後面是一個半型空格，網站 favicon 不變。**喚醒** 或瀏覽器自動復活後，重新載入頁面會恢復網站標題。注入有短逾時，失敗不阻擋釋放；若未授予站點／檔案存取權或屬保護頁面，則跳過前綴。
 
 **本地 `file://` 檔案：** 需在 `chrome://extensions`（或 `edge://extensions`）→ 本擴充功能「詳細資料」中開啟 **「允許存取檔案網址」／Allow access to file URLs**，非作用中分頁才能穩定注入標題前綴；對目前作用中分頁，透過點擊工具列圖示開啟 popup 時，`activeTab` 通常已足夠。
 
@@ -107,7 +105,7 @@ node scripts/build-dist.js
 - **Chrome / Edge 穩定版、Brave**：自動改用 Discard 休眠分頁
 - **Chromium（開發版）**：若含 `chrome.processes` API 則走 End Task，否則 Discard
 
-本擴充功能另需 **`scripting`**、**`activeTab`** 與 **`http://*/*`、`https://*/*`、`file:///*` 主機權限**，才能在釋放前修改分頁列 favicon，並在 Dev End Task 前修改分頁標題（僅注入標記，不讀取網頁內容）。本機檔案另需使用者開啟「允許存取檔案網址」。舊版白名單會在首次載入新版時自動遷移成站點規則。
+本擴充功能另需 **`scripting`**、**`activeTab`** 與 **`http://*/*`、`https://*/*`、`file:///*` 主機權限**，才能在釋放前修改分頁標題（僅注入標記，不讀取網頁內容）。本機檔案另需使用者開啟「允許存取檔案網址」。舊版白名單會在首次載入新版時自動遷移成站點規則。
 
 ## 自訂快捷鍵
 
@@ -127,7 +125,7 @@ node scripts/build-dist.js
 ├── popup.js                      # popup 邏輯
 ├── popup.css                     # popup 樣式
 ├── background.js                 # Service Worker（快捷鍵、自動釋放、訊息）
-├── prefix-tab-title.js           # 釋放前注入標題標記與睡眠 favicon
+├── prefix-tab-title.js           # 釋放前注入標題標記
 ├── icons/                        # 擴充功能圖示
 ├── scripts/build-dist.js         # 將可載入擴充功能組到 dist/
 ├── docs/diagrams/                # 架構與流程圖

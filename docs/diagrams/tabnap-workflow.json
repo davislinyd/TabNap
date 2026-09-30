@@ -75,7 +75,7 @@
       "col": 2,
       "type": "frontend",
       "label": "睡眠標記",
-      "sublabel": "favicon／title"
+      "sublabel": "title prefix"
     },
     {
       "id": "backend",
@@ -171,7 +171,7 @@
       "title": "同一條釋放路徑",
       "items": [
         "Popup、快捷鍵與自動釋放都進 EndTaskCore",
-        "自動釋放不注入 ♻️ 標題前綴"
+        "所有釋放方式都嘗試注入 💤 標題前綴"
       ]
     },
     {

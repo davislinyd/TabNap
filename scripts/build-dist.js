@@ -8,7 +8,6 @@ const STAMP_NAME = '.tabnap-build.json';
 function isLocalRef(value) {
   return typeof value === 'string'
     && value.length > 0
-    && value !== '_favicon/'
     && !/^[a-z][a-z0-9+.-]*:/i.test(value)
     && !value.startsWith('#')
     && !value.startsWith('//')

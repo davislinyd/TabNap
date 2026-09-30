@@ -1,6 +1,6 @@
 /**
  * Shared tab release helpers for popup and service worker.
- * Depends on: AutoEndRules, prefixTabTitleWithMarker and setTabSleepingIcon.
+ * Depends on: AutoEndRules and prefixTabTitleWithMarker.
  * Backend: terminate via chrome.processes when present, otherwise tabs.discard.
  */
 (function () {
@@ -11,7 +11,6 @@
   const PREFIX_SINGLE_MS = 1000;
   const PREFIX_BATCH_PER_TAB_MS = 350;
   const PREFIX_BATCH_GROUP_MS = 700;
-  const SLEEPING_ICON_TIMEOUT_MS = 2000;
   const PROBE_STATE_ALIVE = 'alive';
   const PROBE_STATE_DEAD = 'dead';
   const PROBE_STATE_UNKNOWN = 'unknown';
@@ -383,49 +382,9 @@
   }
 
   /**
-   * Best-effort sleeping favicon before the renderer is released.
-   * @param {chrome.tabs.Tab[]} tabs
-   */
-  async function setSleepingIconTabsBestEffort(tabs) {
-    if (typeof setTabSleepingIcon !== 'function') return;
-    const list = (tabs || []).filter((tab) => tab?.id && !isBuiltInPage(tab.url));
-    if (list.length === 0) return;
-
-    const deadline = Date.now() + SLEEPING_ICON_TIMEOUT_MS;
-    const run = (targets) =>
-      Promise.all(
-        targets.map((tab) =>
-          setTabSleepingIcon(tab.id, tab.url, {
-            maybeHasActiveTabAccess: !!tab.active,
-            faviconUrl: tab.favIconUrl,
-          }).catch(() => false)
-        )
-      );
-
-    const work = run(list);
-    const results = await Promise.race([
-      work,
-      sleep(SLEEPING_ICON_TIMEOUT_MS).then(() => null),
-    ]);
-    if (!results) return;
-
-    // Retry only tabs whose injection failed before the deadline.
-    const failed = list.filter((_tab, index) => !results[index]);
-    if (failed.length === 0) return;
-    const remainingMs = Math.max(0, deadline - Date.now());
-    if (remainingMs === 0) return;
-
-    await Promise.race([
-      run(failed),
-      sleep(remainingMs).then(() => null),
-    ]).catch(() => {});
-  }
-
-  /**
    * Terminate a tab's renderer process and mark all tabs sharing that process.
    * @param {chrome.tabs.Tab} tab
    * @param {{
-   *   prefixTitle?: boolean,
    *   maybeHasActiveTabAccess?: boolean,
    *   allTabs?: chrome.tabs.Tab[],
    *   terminatedStorage?: ReturnType<typeof AutoEndRules.getTerminatedTabsStorage>,
@@ -433,7 +392,6 @@
    */
   async function terminateTabProcess(tab, options = {}) {
     const {
-      prefixTitle = true,
       maybeHasActiveTabAccess = false,
       allTabs = null,
       terminatedStorage = AutoEndRules.getTerminatedTabsStorage(),
@@ -454,15 +412,10 @@
     }
 
     const targetTab = { ...tab, active: maybeHasActiveTabAccess || !!tab.active };
-    await Promise.all([
-      setSleepingIconTabsBestEffort([targetTab]),
-      prefixTitle
-        ? prefixTabsBestEffort([targetTab], {
-            perTabMs: PREFIX_SINGLE_MS,
-            totalMs: PREFIX_SINGLE_MS,
-          })
-        : Promise.resolve(),
-    ]);
+    await prefixTabsBestEffort([targetTab], {
+      perTabMs: PREFIX_SINGLE_MS,
+      totalMs: PREFIX_SINGLE_MS,
+    });
 
     const tabsSnapshot = allTabs || (await chrome.tabs.query({}));
     let processId = null;
@@ -721,7 +674,6 @@
    * Terminate many tabs; dedupes by process id and writes storage once per batch group.
    * @param {chrome.tabs.Tab[]} tabs
    * @param {{
-   *   prefixTitle?: boolean,
    *   concurrency?: number,
    *   allTabs?: chrome.tabs.Tab[],
    *   terminatedStorage?: ReturnType<typeof AutoEndRules.getTerminatedTabsStorage>,
@@ -730,7 +682,6 @@
    */
   async function terminateTabsBatch(tabs, options = {}) {
     const {
-      prefixTitle = false,
       concurrency = DEFAULT_CONCURRENCY,
       allTabs = null,
       terminatedStorage = AutoEndRules.getTerminatedTabsStorage(),
@@ -813,16 +764,11 @@
     for (const [processId, groupTabs] of processGroups) {
       const primary = groupTabs[0];
       try {
-        // Update favicon/title BEFORE kill — once the process is gone, scripting cannot.
-        await Promise.all([
-          setSleepingIconTabsBestEffort(groupTabs),
-          prefixTitle
-            ? prefixTabsBestEffort(groupTabs, {
-                perTabMs: PREFIX_BATCH_PER_TAB_MS,
-                totalMs: PREFIX_BATCH_GROUP_MS,
-              })
-            : Promise.resolve(),
-        ]);
+        // Prefix before kill; the renderer cannot be scripted afterward.
+        await prefixTabsBestEffort(groupTabs, {
+          perTabMs: PREFIX_BATCH_PER_TAB_MS,
+          totalMs: PREFIX_BATCH_GROUP_MS,
+        });
 
         await ensureTerminated(processId, primary.id);
 
@@ -964,7 +910,6 @@
   async function discardTab(tab, options = {}) {
     const {
       terminatedStorage = AutoEndRules.getTerminatedTabsStorage(),
-      skipSleepingIcon = false,
     } = options;
 
     if (!tab?.id) {
@@ -995,8 +940,8 @@
       };
     }
 
-    if (!skipSleepingIcon) {
-      await setSleepingIconTabsBestEffort([current]);
+    if (!options.skipTitlePrefix) {
+      await prefixTabsBestEffort([current]);
     }
     await ensureTabNotActive(current);
 
@@ -1071,8 +1016,8 @@
       }
     });
 
-    // Inject all icons once, with one short global timeout, before discarding.
-    await setSleepingIconTabsBestEffort(freshList);
+    // Prefix all titles once, before discarding the renderers.
+    await prefixTabsBestEffort(freshList);
 
     const inactive = [];
     const active = [];
@@ -1089,7 +1034,7 @@
       try {
         const result = await discardTab(item, {
           terminatedStorage,
-          skipSleepingIcon: true,
+          skipTitlePrefix: true,
         });
         Object.assign(storedEntries, result.storedEntries);
         for (const id of result.terminatedTabIds || []) terminatedTabIds.push(id);
@@ -1199,7 +1144,6 @@
     isTabProcessAlive,
     pickFocusSuccessor,
     prefixTabsBestEffort,
-    setSleepingIconTabsBestEffort,
     probeTabProcess,
     reconcileDiscardedTabs,
     reconcileDeadTabs,

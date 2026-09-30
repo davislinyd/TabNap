@@ -49,7 +49,7 @@ TabNap 讓你在 Chromium 系瀏覽器中休眠分頁以釋放記憶體：穩定
 • 自動釋放：依閒置分鐘數清理背景分頁
 • 站點規則：依 Domain、FQDN 或 URL 設定 Never Close 或自訂分鐘數
 • 分頁級政策：單一 tab 可設預設、Never Close 或自訂閒置時間（優先於站點規則）
-• Dev channel 終止 http／https／file 分頁前，best-effort 在標題加上 ♻️，方便在分頁列辨識
+• 釋放 http／https／file 分頁前，best-effort 在標題最左側加上 💤 與半型空格，原網站圖示不變
 
 【使用方式】
 1. 點擊工具列圖示開啟 popup

@@ -24,7 +24,7 @@ function makeFixture() {
   fs.writeFileSync(path.join(root, 'popup.js'), '/* popup */\n');
   fs.writeFileSync(
     path.join(root, 'background.js'),
-    "importScripts('helper.js');\nchrome.runtime.getURL('icons/icon16.png');\nchrome.runtime.getURL('_favicon/');\n"
+    "importScripts('helper.js');\nchrome.runtime.getURL('icons/icon16.png');\n"
   );
   fs.writeFileSync(path.join(root, 'helper.js'), '/* helper */\n');
   fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify({
@@ -57,7 +57,6 @@ try {
   const built = buildExtension(fixture);
   assert(built.includes('helper.js'), 'importScripts target is part of the build');
   assert(built.includes('popup.css'), 'popup stylesheet is part of the build');
-  assert(!built.includes('_favicon/'), 'browser favicon endpoint is not a project asset');
   assert(!built.includes('README.md'), 'unreferenced source stays out of the build');
   assert(fs.existsSync(path.join(fixture.outDir, 'manifest.json')), 'manifest copied');
   assert(

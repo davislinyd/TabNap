@@ -122,7 +122,7 @@ function createTabItem(tab, options = {}) {
   item.dataset.tabId = String(tab.id);
 
   const displayUrl = storedInfo?.url ?? tab.url ?? '';
-  // Live tabs must not show ♻️: chrome.tabs.title can lag after End Task / revive
+  // Live tabs must not show release markers: chrome.tabs.title can lag after revive
   // while the browser tab strip already shows a clean title.
   let displayTitle = storedInfo?.title ?? tab.title ?? '(無標題)';
   if (!isTerminated && typeof stripTitlePrefixMark === 'function') {
@@ -317,7 +317,6 @@ async function endTask(tabId, itemEl, tab) {
     const tabPolicies = AutoEndRules.normalizeTabPolicies(tabPoliciesRaw);
 
     const result = await requestReleaseTab(tab, {
-      prefixTitle: EndTaskCore.getReleaseBackend() === 'terminate',
       maybeHasActiveTabAccess: !!tab.active,
       allTabs,
       terminatedStorage,
@@ -519,7 +518,6 @@ async function endTaskAll() {
     const allTabs = await chrome.tabs.query({});
 
     const result = await requestReleaseTabs(allowed, {
-      prefixTitle: EndTaskCore.getReleaseBackend() === 'terminate',
       concurrency: EndTaskCore.DEFAULT_CONCURRENCY,
       allTabs,
       terminatedStorage,

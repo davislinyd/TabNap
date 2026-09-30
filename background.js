@@ -106,7 +106,6 @@ async function runAutoEndTask() {
 
   try {
     await EndTaskCore.releaseTabsBatch(toTerminate, {
-      prefixTitle: false,
       concurrency: EndTaskCore.DEFAULT_CONCURRENCY,
       allTabs: tabs,
       terminatedStorage,
@@ -230,7 +229,6 @@ function serializeReleaseError(err) {
 async function releaseTabById(tabId, options = {}) {
   const tab = await chrome.tabs.get(tabId);
   return EndTaskCore.releaseTab(tab, {
-    prefixTitle: EndTaskCore.getReleaseBackend() === 'terminate',
     maybeHasActiveTabAccess: !!tab.active,
     terminatedStorage,
     ...options,
@@ -247,7 +245,6 @@ async function releaseTabsByIds(tabIds, options = {}) {
     }
   }
   return EndTaskCore.releaseTabsBatch(tabs, {
-    prefixTitle: EndTaskCore.getReleaseBackend() === 'terminate',
     concurrency: EndTaskCore.DEFAULT_CONCURRENCY,
     terminatedStorage,
     ...options,
@@ -316,7 +313,6 @@ chrome.commands.onCommand.addListener(async (command) => {
     }
 
     await EndTaskCore.releaseTab(tab, {
-      prefixTitle: EndTaskCore.getReleaseBackend() === 'terminate',
       maybeHasActiveTabAccess: true,
       terminatedStorage,
     });
